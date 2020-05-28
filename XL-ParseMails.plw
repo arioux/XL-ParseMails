@@ -1,0 +1,3082 @@
+#!/usr/bin/perl
+# Perl - v: 5.16.3
+#------------------------------------------------------------------------------#
+# XL-ParseMails.plw     : Part of the XL-Toolkit, XL-Parsemails provides functions
+#                         to parse email for analysis.
+# Website               : http://le-tools.com/XL-ParseMails.html
+# SourceForge           : https://sourceforge.net/p/xl-parsemails
+# GitHub                : https://github.com/arioux/XL-ParseMails
+# Creation              : 2020-05-28
+# Modified              : 2020-05-28
+my $VERSION             = '1.0';
+# Author                : Alain Rioux (admin@le-tools.com)
+#
+# Copyright (C) 2020 Alain Rioux (le-tools.com)
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#
+#------------------------------------------------------------------------------#
+# Modules
+#------------------------------------------------------------------------------#
+use strict;
+use utf8;
+use Cwd;
+use DBI;
+use Net::CIDR 'cidrlookup';
+use Net::DNS;
+use base qw/Net::DNS::Resolver::Base/;
+use Encode qw(encode decode);
+use MIME::Base64 qw( decode_base64 );
+use MIME::QuotedPrint;
+use Excel::Writer::XLSX;
+use Extract::Regex;                  # This is a personal module
+use File::Spec::Functions qw(canonpath);
+use File::Path qw(make_path);
+use DateTime;
+use DateTime::TimeZone;
+use HTTP::Date qw(str2time);
+use GeoIP2::Database::Reader;
+use LWP::UserAgent;
+use Net::IP;
+use Regexp::IPv6 qw($IPv6_re);
+use Tk;
+use Tk::Balloon;
+use Tk::BrowseEntry;
+use Tk::DialogBox;
+use Tk::FileSelect;
+use Tk::LabFrame;
+use Tk::NoteBook;
+use Tk::Optionmenu;
+use Tk::PNG;
+use Tk::ProgressBar;
+use Tk::StatusBar;
+use Email::Outlook::Message;
+use Email::Simple;
+require "XL-ParseMailsGraph.pl";
+
+#------------------------------------------------------------------------------#
+# Global variables
+#------------------------------------------------------------------------------#
+my $PROGDIR = cwd;                                                             # Program dir
+my %SETTINGS;                                                                  # Settings
+my %USERVAR;                                                                   # User variables
+my %GUI;                                                                       # GUI Controls
+my $USERDIR;                                                                   # User path
+if (-d "$ENV{'APPDATA'}\\XL-Toolkit\\XL-ParseMails") { $USERDIR = "$ENV{'APPDATA'}\\XL-Toolkit\\XL-ParseMails"; }
+else                                                 { $USERDIR = $PROGDIR;                                     }
+my $SETTINGS_FILE  = "$USERDIR\\XL-ParseMails.ini";                            # Settings file
+my $LOGGING_FILE   = "$USERDIR\\XL-ParseMails.log";                            # Logging file for errors
+my $URL_DOC        = "http://le-tools.com/XL-ParseMails.html";                 # Online documentation
+my $URL_TOOL       = 'http://le-tools.com/XL-ParseMails.html#Download';        # Url of the tool
+my $URL_VER        = 'http://www.le-tools.com/download/XL-ParseMailsVer.txt';  # Url of the version file
+$GUI{START} = 0;
+
+#------------------------------------------------------------------------------#
+# Graphic elements
+#------------------------------------------------------------------------------#
+my ($refIMG) = loadGraph();
+
+#------------------------------------------------------------------------------#
+# Main window
+#------------------------------------------------------------------------------#
+my $mw = MainWindow->new(-background => 'grey95');
+$mw->optionAdd("*background"=>'grey95','userDefault');
+$mw->configure(-title => "XL-ParseEmails");
+$mw->protocol('WM_DELETE_WINDOW' => \&exitMain);
+# Program icon
+my $icon = $mw->Photo(-data => $$refIMG{logo});
+$mw->idletasks; # this line is crucial
+$mw->iconimage($icon);
+# Size and position
+&setWinSizePos($mw, 700, 400);
+sub setWinSizePos {
+  my ($window, $width, $height) = @_;
+  $window->minsize($width, $height);
+  my $x = int(($window->screenwidth  / 2) - ($width  / 2));
+  my $y = int(($window->screenheight / 2) - ($height / 2));
+  $window->geometry($width . "x" . $height . "+" . $x . "+" . $y);
+}
+# Fonts
+$GUI{fonts}{normal}  = $mw->fontCreate('normal' , -family => 'Calibri', -size => 10);
+$GUI{fonts}{normalB} = $mw->fontCreate('normalB', -family => 'Calibri', -size => 10, -weight => 'bold');
+$GUI{fonts}{title}   = $mw->fontCreate('title'  , -family => 'Calibri', -size => 12, -weight => 'bold');
+# Input
+my $frame = $mw->Frame(-background => 'steelblue2')->pack(qw/-side top -fill x/);
+$frame->Label(
+  -text       => 'Input',
+  -font       => $GUI{fonts}{title},
+  -background => 'steelblue2',
+  -foreground => 'white',
+  -width      => 10,
+  -height     => 1,
+  -anchor     => 'w',
+)->pack(qw/-side left -padx 3/);
+$frame = $mw->Frame()->pack(qw/-side top -fill x -padx 2 -ipady 5/);
+$frame->Label(
+  -text         => 'Directory:',
+  -font         => $GUI{fonts}{normal},
+  -width        => 10,
+  -anchor       => 'w',
+)->pack(qw/-side left -padx 3/);
+$GUI{input} = $frame->Entry(
+  -textvariable => \$USERVAR{input},
+  -font         => $GUI{fonts}{normal},
+  -background   => 'white',
+  -relief       => 'sunken',
+  -validate     => 'focusout',
+  -vcmd         => \&isProcessReady,
+)->pack(qw/-side left -pady 2 -padx 3 -expand 1 -fill x/);
+$GUI{input}->bind('<KeyRelease>' => \&isProcessReady);
+&entryPopup($GUI{input});
+$GUI{inputButton} = $frame->Button(
+  -image        => $mw->Photo(-data => $$refIMG{folder}),
+  -font         => $GUI{fonts}{normal},
+  -command      => sub {
+    my $initialDir;
+    if    ($USERVAR{input} ) { $initialDir = $USERVAR{input}; }
+    elsif ($PROGDIR        ) { $initialDir = $PROGDIR;        }
+    else                     { $initialDir = '~';             }
+    my $dir = $mw->chooseDirectory(-initialdir => $initialDir, -title => 'Choose a directory');
+    $USERVAR{input} = canonpath($dir) if defined $dir and -d $dir;
+  }
+)->pack(qw/-side left -padx 0/);
+my $balloon = $mw->Balloon();
+$balloon->attach($GUI{inputButton}, -balloonmsg => 'Select an input folder...');
+$USERVAR{subfolders} = 1;
+$frame->Checkbutton(
+  -text             => 'Subfolders',
+  -font             => $GUI{fonts}{normal},
+  -activebackground => 'grey95',
+  -width            => 10,
+  -variable         => \$USERVAR{subfolders},
+  -anchor           => 'w',
+)->pack(qw/-side left -padx 3/);
+$frame = $mw->Frame()->pack(qw/-side top -fill x -padx 2/);
+$frame->Label(
+  -text             => 'Format:',
+  -font             => $GUI{fonts}{normal},
+  -width            => 10,
+  -anchor           => 'w',
+)->pack(qw/-side left -padx 2/);
+$USERVAR{formatMSG} = 1;
+$frame->Checkbutton(
+  -text             => '*.msg',
+  -font             => $GUI{fonts}{normal},
+  -activebackground => 'grey95',
+  -width            => 6,
+  -variable         => \$USERVAR{formatMSG},
+)->pack(qw/-side left -padx 0/);
+$USERVAR{formatEML} = 1;
+$frame->Checkbutton(
+  -text             => '*.eml',
+  -font             => $GUI{fonts}{normal},
+  -activebackground => 'grey95',
+  -width            => 5,
+  -variable         => \$USERVAR{formatEML},
+)->pack(qw/-side left -padx 15/);
+$frame = $mw->Frame(-background => 'white')->pack(qw/-side top -pady 5/);
+# Functions
+$frame = $mw->Frame(-background => 'steelblue2')->pack(qw/-side top -fill x/);
+$frame->Label(
+  -text               => 'Functions',
+  -font               => $GUI{fonts}{title},
+  -background         => 'steelblue2',
+  -foreground         => 'white',
+  -width              => 10,
+  -height             => 1,
+  -anchor             => 'w',
+)->pack(qw/-side left -padx 3/);
+$GUI{NBFunctions} = $mw->NoteBook(
+  -backpagecolor      => 'white',
+  -inactivebackground => 'lightgrey',
+  -relief             => 'flat',
+  -font               => $GUI{fonts}{normal})->pack(qw/-side top -fill both -expand 1/);
+$GUI{NBFunctions}{tab1} = $GUI{NBFunctions}->add('ParseHeaders', -underline => 0, -label => 'Parse headers');
+$GUI{NBFunctions}{tab2} = $GUI{NBFunctions}->add('Extract'     , -underline => 0, -label => 'Extract'      );
+$GUI{NBFunctions}{tab3} = $GUI{NBFunctions}->add('Search'      , -underline => 0, -label => 'Search'       );
+$GUI{NBFunctions}{tab4} = $GUI{NBFunctions}->add('Gephi'       , -underline => 0, -label => 'Gephi'        );
+
+# Parse Headers
+
+$GUI{NBFunctions}{Frame1} = $GUI{NBFunctions}{tab1}->Frame()->pack(qw/-side top -fill both -expand 1 -padx 2 -pady 3/);
+$frame = $GUI{NBFunctions}{Frame1}->Frame()->pack(qw/-side top -fill x -padx 2 -pady 3/);
+$frame->Label(
+  -text             => 'Fields:',
+  -font             => $GUI{fonts}{normal},
+  -width            => 10,
+  -anchor           => 'w',
+)->pack(qw/-side left/);
+$USERVAR{parseFields} = 'typical';
+$frame->Radiobutton(
+  -text             => 'Typical',
+  -value            => 'typical',
+  -font             => $GUI{fonts}{normal},
+  -activebackground => 'grey95',
+  -width            => 8,
+  -anchor           => 'w',
+  -variable         => \$USERVAR{parseFields},
+  -command          => \&isProcessReady,
+)->pack(qw/-side left/);
+$frame->Radiobutton(
+  -text             => 'All',
+  -value            => 'all',
+  -font             => $GUI{fonts}{normal},
+  -activebackground => 'grey95',
+  -width            => 5,
+  -anchor           => 'w',
+  -variable         => \$USERVAR{parseFields},
+  -command          => \&isProcessReady,
+)->pack(qw/-side left/);
+$frame->Radiobutton(
+  -text             => 'Choose',
+  -value            => 'choose',
+  -font             => $GUI{fonts}{normal},
+  -activebackground => 'grey95',
+  -width            => 5,
+  -anchor           => 'w',
+  -variable         => \$USERVAR{parseFields},
+  -command          => \&isProcessReady,
+)->pack(qw/-side left/);
+$GUI{selectFieldsBut} = $frame->Button(
+  -text             => 'Select fields...',
+  -font             => $GUI{fonts}{normal},
+  -width            => 15,
+  -background       => 'grey95',
+  -state            => 'disabled',
+  -command          => [\&selectFields, 1],
+)->pack(qw/-side left -padx 20/);
+$frame = $GUI{NBFunctions}{Frame1}->Frame()->pack(qw/-side top -fill x/);
+$frame->Label(
+  -text             => '',
+  -font             => $GUI{fonts}{normal},
+  -width            => 10,
+  -anchor           => 'w',
+)->pack(qw/-side left/);
+$GUI{allReceivedCheck} = $frame->Checkbutton(
+  -text             => 'All Received fields (default is last only)',
+  -font             => $GUI{fonts}{normal},
+  -width            => 35,
+  -anchor           => 'w',
+  -activebackground => 'grey95',
+  -variable         => \$USERVAR{allReceived},
+)->pack(qw/-side left/);
+$GUI{convertDTOpt} = $frame->Checkbutton(
+  -text             => 'Convert datetime (ISO)',
+  -font             => $GUI{fonts}{normal},
+  -width            => 35,
+  -anchor           => 'w',
+  -activebackground => 'grey95',
+  -variable         => \$USERVAR{convertDatetime},
+)->pack(qw/-side left/);
+$frame = $GUI{NBFunctions}{Frame1}->Frame()->pack(qw/-side top -fill x/);
+$frame->Label(
+  -text             => 'Add:',
+  -font             => $GUI{fonts}{normal},
+  -width            => 10,
+  -anchor           => 'w',
+)->pack(qw/-side left/);
+$USERVAR{sourceFile} = 1;
+$frame->Checkbutton(
+  -text             => 'Source file',
+  -font             => $GUI{fonts}{normal},
+  -activebackground => 'grey95',
+  -variable         => \$USERVAR{sourceFile},
+)->pack(qw/-side left/);
+$frame->Checkbutton(
+  -text             => 'List of attached files',
+  -font             => $GUI{fonts}{normal},
+  -activebackground => 'grey95',
+  -variable         => \$USERVAR{attachedFiles},
+)->pack(qw/-side left -padx 10/);
+$frame->Checkbutton(
+  -text             => 'NSLookup',
+  -font             => $GUI{fonts}{normal},
+  -activebackground => 'grey95',
+  -variable         => \$USERVAR{resNSLookup},
+)->pack(qw/-side left/);
+$GUI{addISPOpt} = $frame->Checkbutton(
+  -text             => 'ISP details (XL-Whois)',
+  -font             => $GUI{fonts}{normal},
+  -activebackground => 'grey95',
+  -variable         => \$USERVAR{resISP},
+)->pack(qw/-side left -padx 10/);
+$GUI{addGeoIPOpt} = $frame->Checkbutton(
+  -text             => 'GeoIP',
+  -font             => $GUI{fonts}{normal},
+  -activebackground => 'grey95',
+  -variable         => \$USERVAR{resGeoIP},
+)->pack(qw/-side left/);
+$frame = $GUI{NBFunctions}{Frame1}->Frame()->pack(qw/-side top -pady 5/);
+$frame = $GUI{NBFunctions}{Frame1}->Frame()->pack(qw/-side top -fill x -padx 2 -pady 2/);
+$frame->Label(
+  -text               => 'Report:',
+  -font               => $GUI{fonts}{normal},
+  -width              => 10,
+  -anchor             => 'w',
+)->pack(qw/-side left/);
+$GUI{reportDir1} = $frame->Entry(
+  -textvariable       => \$SETTINGS{reportDir},
+  -font               => $GUI{fonts}{normal},
+  -background         => 'white',
+  -relief             => 'sunken',
+  -validate           => 'focusout',
+  -vcmd               => \&isProcessReady,
+)->pack(qw/-side left -pady 1 -padx 3 -expand 1 -fill x/);
+$GUI{reportDir1}->bind('<KeyRelease>' => \&isProcessReady);
+&entryPopup($GUI{reportDir1});
+my $formatSel = $frame->BrowseEntry(
+  -textvariable       => \$SETTINGS{reportFormat},
+  -font               => $GUI{fonts}{normal},
+  -choices            => ['XLSX', 'HTML', 'CSV'],
+  -background         => 'white',
+  -disabledbackground => 'white',
+  -disabledforeground => 'black',
+  -state              => 'readonly',
+  -width              => 6,
+  -listwidth          => 20,
+  -listheight         => 3,
+  -browsecmd          => sub {
+    &changeReportFormat;
+    &saveSettings;
+  }
+)->pack(qw/-side left -padx 1/);
+$SETTINGS{reportFormat} = 'XLSX';
+$GUI{selDirButton} = $frame->Button(
+  -image              => $mw->Photo(-data => $$refIMG{folder}),
+  -font               => $GUI{fonts}{normal},
+  -command            => sub {
+    my $initialDir;
+    if    ($SETTINGS{reportDir}) { $initialDir = $SETTINGS{reportDir}; }
+    elsif ($PROGDIR            ) { $initialDir = $PROGDIR;             }
+    else                         { $initialDir = '~';                  }
+    my $dir = $mw->chooseDirectory(-initialdir => $initialDir, -title => 'Choose a directory');
+    $SETTINGS{reportDir} = canonpath($dir) if defined $dir and -d $dir;
+    &saveSettings;
+  }
+)->pack(qw/-side left -padx 1/);
+$balloon->attach($GUI{selDirButton}, -balloonmsg => 'Select an output folder...');
+$GUI{openDirButton} = $frame->Button(
+  -image            => $mw->Photo(-data => $$refIMG{folderOpen}),
+  -font             => $GUI{fonts}{normal},
+  -command          => sub { system("cmd /c start $SETTINGS{reportDir}") if -d $SETTINGS{reportDir}; },
+)->pack(qw/-side left -padx 1/);
+$balloon->attach($GUI{openDirButton}, -balloonmsg => 'Open the folder in Windows Explorer...');
+$frame = $GUI{NBFunctions}{Frame1}->Frame()->pack(qw/-side top -fill x -pady 2/);
+$frame->Label(-font => $GUI{fonts}{normal}, -width => 10)->pack(qw/-side left/);
+$frame->Checkbutton(
+  -text             => 'Open report when finished',
+  -font             => $GUI{fonts}{normal},
+  -anchor           => 'w',
+  -activebackground => 'grey95',
+  -variable         => \$SETTINGS{openReportEnd},
+  -command          => \&saveSettings,
+)->pack(qw/-side left/);
+$GUI{NBFunctions}{OptWidthLbl} = $frame->Label(
+  -text               => 'Max column width:',
+  -font               => $GUI{fonts}{normal},
+  -width              => 32,
+  -anchor             => 'e',
+)->pack(qw/-side left/);
+$SETTINGS{maxColumWidth} = 150;
+$GUI{NBFunctions}{OptWidthSpin} = $frame->Spinbox(
+  -width              => 6,
+  -from               => 10,
+  -to                 => 250,
+  -textvariable       => \$SETTINGS{maxColumWidth},
+  -font               => $GUI{fonts}{normal},
+  -background         => 'white',
+  -increment          => 10,
+  -command            => \&saveSettings,
+)->pack(qw/-side left -padx 10/);
+$GUI{NBFunctions}{OptWidthSpin}{PackInfo} = [$GUI{NBFunctions}{OptWidthSpin}->packInfo]; $GUI{NBFunctions}{OptWidthSpin}->packForget;
+$GUI{NBFunctions}{OptWidthLbl}{PackInfo}  = [$GUI{NBFunctions}{OptWidthLbl}->packInfo];  $GUI{NBFunctions}{OptWidthLbl}->packForget;
+$GUI{NBFunctions}{OptSeparLbl} = $frame->Label(
+  -text               => 'Separator:',
+  -font               => $GUI{fonts}{normal},
+  -width              => 32,
+  -anchor             => 'e',
+)->pack(qw/-side left/);
+$SETTINGS{CSVSeparator} = 'Tab';
+$GUI{NBFunctions}{OptSeparMenu} = $frame->Optionmenu(
+  -variable           => \$SETTINGS{CSVSeparator},
+  -options            => [',',';','Tab','|'],
+  -font               => $GUI{fonts}{normal},
+  -command            => \&saveSettings,
+)->pack(qw/-side left -padx 10/);
+$GUI{NBFunctions}{OptSeparMenu}{PackInfo} = [$GUI{NBFunctions}{OptSeparMenu}->packInfo]; $GUI{NBFunctions}{OptSeparMenu}->packForget;
+$GUI{NBFunctions}{OptSeparLbl}{PackInfo}  = [$GUI{NBFunctions}{OptSeparLbl}->packInfo];  $GUI{NBFunctions}{OptSeparLbl}->packForget;
+
+# Extract
+
+$GUI{NBFunctions}{Frame2} = $GUI{NBFunctions}{tab2}->Frame()->pack(qw/-side top -fill both -expand 1 -padx 2 -pady 3/);
+$frame = $GUI{NBFunctions}{Frame2}->Frame()->pack(qw/-side top -fill x/);
+$USERVAR{extractHeaders} = 0;
+$frame->Checkbutton(
+  -text             => 'Headers',
+  -font             => $GUI{fonts}{normal},
+  -activebackground => 'grey95',
+  -width            => 15,
+  -anchor           => 'w',
+  -variable         => \$USERVAR{extractHeaders},
+  -command          => \&isProcessReady,
+)->pack(qw/-side left -padx 3/);
+$USERVAR{extractHeaderF} = 'all';
+$GUI{extractHeaderF1} = $frame->Radiobutton(
+  -text             => 'Typical',
+  -value            => 'typical',
+  -font             => $GUI{fonts}{normal},
+  -activebackground => 'grey95',
+  -width            => 8,
+  -anchor           => 'w',
+  -variable         => \$USERVAR{extractHeaderF},
+  -state            => 'disabled',
+  -command          => \&isProcessReady,
+)->pack(qw/-side left/);
+$GUI{extractHeaderF2} = $frame->Radiobutton(
+  -text             => 'All',
+  -value            => 'all',
+  -font             => $GUI{fonts}{normal},
+  -activebackground => 'grey95',
+  -width            => 5,
+  -anchor           => 'w',
+  -variable         => \$USERVAR{extractHeaderF},
+  -state            => 'disabled',
+  -command          => \&isProcessReady,
+)->pack(qw/-side left/);
+$GUI{extractHeaderF3} = $frame->Radiobutton(
+  -text             => 'Choose',
+  -value            => 'choose',
+  -font             => $GUI{fonts}{normal},
+  -activebackground => 'grey95',
+  -width            => 5,
+  -anchor           => 'w',
+  -variable         => \$USERVAR{extractHeaderF},
+  -state            => 'disabled',
+  -command          => \&isProcessReady,
+)->pack(qw/-side left/);
+$GUI{selectFieldsButE} = $frame->Button(
+  -text             => 'Select fields...',
+  -font             => $GUI{fonts}{normal},
+  -width            => 15,
+  -background       => 'grey95',
+  -state            => 'disabled',
+  -command          => [\&selectFields, 2],
+)->pack(qw/-side left -padx 20/);
+$frame = $GUI{NBFunctions}{Frame2}->Frame()->pack(qw/-side top -fill x/);
+$USERVAR{extractBody} = 0;
+$frame->Checkbutton(
+  -text             => 'Body',
+  -font             => $GUI{fonts}{normal},
+  -activebackground => 'grey95',
+  -width            => 15,
+  -anchor           => 'w',
+  -variable         => \$USERVAR{extractBody},
+  -command          => \&isProcessReady,
+)->pack(qw/-side left -padx 3 -pady 5/);
+$USERVAR{extractBodyText} = 1;
+$GUI{extractBodyText} = $frame->Checkbutton(
+  -text             => 'Text',
+  -font             => $GUI{fonts}{normal},
+  -activebackground => 'grey95',
+  -width            => 6,
+  -anchor           => 'w',
+  -variable         => \$USERVAR{extractBodyText},
+  -state            => 'disabled',
+  -command          => \&isProcessReady,
+)->pack(qw/-side left -padx 2/);
+$USERVAR{extractBodyHTML} = 1;
+$GUI{extractBodyHTML} = $frame->Checkbutton(
+  -text             => 'HTML',
+  -font             => $GUI{fonts}{normal},
+  -activebackground => 'grey95',
+  -variable         => \$USERVAR{extractBodyHTML},
+  -state            => 'disabled',
+  -command          => \&isProcessReady,
+)->pack(qw/-side left -padx 2/);
+$GUI{extractBodyAddHeader} = $frame->Checkbutton(
+  -text             => 'Merge Headers and Body',
+  -font             => $GUI{fonts}{normal},
+  -activebackground => 'grey95',
+  -width            => 20,
+  -anchor           => 'w',
+  -variable         => \$USERVAR{extractBodyAddHeader},
+  -state            => 'disabled',
+  -command          => \&isProcessReady,
+)->pack(qw/-side left -padx 25/);
+$frame = $GUI{NBFunctions}{Frame2}->Frame()->pack(qw/-side top -fill x/);
+$USERVAR{extractAttach} = 0;
+$frame->Checkbutton(
+  -text             => 'Attachments',
+  -font             => $GUI{fonts}{normal},
+  -activebackground => 'grey95',
+  -width            => 15,
+  -anchor           => 'w',
+  -variable         => \$USERVAR{extractAttach},
+  -command          => \&isProcessReady,
+)->pack(qw/-side left -padx 3/);
+$USERVAR{extractAttachType} = 'all';
+$GUI{extractAttachAll} = $frame->Radiobutton(
+  -text             => 'All',
+  -value            => 'all',
+  -font             => $GUI{fonts}{normal},
+  -activebackground => 'grey95',
+  -width            => 6,
+  -anchor           => 'w',
+  -variable         => \$USERVAR{extractAttachType},
+  -state            => 'disabled',
+  -command          => sub { $GUI{extractAttachListExt}->configure(-state => 'disabled'); }
+)->pack(qw/-side left -padx 2/);
+$GUI{extractAttachImg} = $frame->Radiobutton(
+  -text             => 'Images only',
+  -value            => 'image',
+  -font             => $GUI{fonts}{normal},
+  -activebackground => 'grey95',
+  -width            => 10,
+  -anchor           => 'w',
+  -variable         => \$USERVAR{extractAttachType},
+  -state            => 'disabled',
+  -command          => sub { $GUI{extractAttachListExt}->configure(-state => 'disabled'); }
+)->pack(qw/-side left -padx 2/);
+$GUI{extractAttachExt} = $frame->Radiobutton(
+  -text             => 'By extension:',
+  -value            => 'extList',
+  -font             => $GUI{fonts}{normal},
+  -activebackground => 'grey95',
+  -variable         => \$USERVAR{extractAttachType},
+  -state            => 'disabled',
+  -command          => sub { $GUI{extractAttachListExt}->configure(-state => 'normal'); }
+)->pack(qw/-side left -padx 2/);
+$GUI{extractAttachListExt} = $frame->Entry(
+  -textvariable     => \$USERVAR{extractAttachListExt},
+  -font             => $GUI{fonts}{normal},
+  -background       => 'white',
+  -width            => '20',
+  -state            => 'disabled',
+)->pack(qw/-side left -pady 1 -padx 3/);
+&entryPopup($GUI{extractAttachListExt});
+$balloon->attach($GUI{extractAttachListExt}, -balloonmsg => 'File extension list, separated by comma (ex.: .jpg, .gif)');
+$frame = $GUI{NBFunctions}{Frame2}->Frame()->pack(qw/-side top -fill x/);
+$frame->Label(-font => $GUI{fonts}{normal}, -width => 17)->pack(qw/-side left/);
+$GUI{extractAttachRename} = $frame->Checkbutton(
+  -text             => 'Include source in filename',
+  -font             => $GUI{fonts}{normal},
+  -activebackground => 'grey95',
+  -anchor           => 'w',
+  -variable         => \$USERVAR{extractAttachRename},
+  -state            => 'disabled',
+)->pack(qw/-side left -padx 15/);
+$frame = $GUI{NBFunctions}{Frame2}->Frame()->pack(qw/-side top -pady 5/);
+$frame = $GUI{NBFunctions}{Frame2}->Frame()->pack(qw/-side top -fill x -padx 2 -pady 2/);
+$frame->Label(
+  -text             => 'Destination:',
+  -font             => $GUI{fonts}{normal},
+  -width            => 10,
+  -anchor           => 'w',
+)->pack(qw/-side left/);
+$GUI{reportDir2} = $frame->Entry(
+  -textvariable     => \$SETTINGS{reportDir},
+  -font             => $GUI{fonts}{normal},
+  -background       => 'white',
+  -relief           => 'sunken',
+  -validate         => 'focusout',
+  -vcmd             => \&isProcessReady,
+)->pack(qw/-side left -pady 1 -padx 3 -expand 1 -fill x/);
+$GUI{reportDir2}->bind('<KeyRelease>' => \&isProcessReady);
+&entryPopup($GUI{reportDir2});
+$GUI{selDirButton2} = $frame->Button(
+  -image            => $mw->Photo(-data => $$refIMG{folder}),
+  -font             => $GUI{fonts}{normal},
+  -command          => sub {
+    my $initialDir;
+    if    ($SETTINGS{reportDir}) { $initialDir = $SETTINGS{reportDir}; }
+    elsif ($PROGDIR            ) { $initialDir = $PROGDIR;             }
+    else                         { $initialDir = '~';                  }
+    my $dir = $mw->chooseDirectory(-initialdir => $initialDir, -title => 'Choose a directory');
+    $SETTINGS{reportDir} = canonpath($dir) if defined $dir and -d $dir;
+    &saveSettings;
+  }
+)->pack(qw/-side left -padx 1/);
+$balloon->attach($GUI{selDirButton2}, -balloonmsg => 'Select an output folder...');
+$GUI{OpenDirButton2} = $frame->Button(
+  -image            => $mw->Photo(-data => $$refIMG{folderOpen}),
+  -font             => $GUI{fonts}{normal},
+  -command          => sub { system("cmd /c start $SETTINGS{reportDir}") if -d $SETTINGS{reportDir}; },
+)->pack(qw/-side left -padx 1/);
+$balloon->attach($GUI{OpenDirButton2}, -balloonmsg => 'Open the folder in Windows Explorer...');
+$frame = $GUI{NBFunctions}{Frame2}->Frame()->pack(qw/-side top -fill x -pady 2/);
+$frame->Label(-font => $GUI{fonts}{normal}, -width => 10)->pack(qw/-side left/);
+$frame->Checkbutton(
+  -text             => 'Create a folder for each message',
+  -font             => $GUI{fonts}{normal},
+  -width            => 35,
+  -anchor           => 'w',
+  -activebackground => 'grey95',
+  -variable         => \$SETTINGS{extractMultiDest},
+  -command          => \&saveSettings,
+)->pack(qw/-side left/);
+$SETTINGS{openDirEnd} = 1;
+$frame->Checkbutton(
+  -text             => 'Open folder when finished',
+  -font             => $GUI{fonts}{normal},
+  -anchor           => 'w',
+  -activebackground => 'grey95',
+  -variable         => \$SETTINGS{openDirEnd},
+  -command          => \&saveSettings,
+)->pack(qw/-side left/);
+
+# Search
+
+$GUI{NBFunctions}{Frame3} = $GUI{NBFunctions}{tab3}->Frame()->pack(qw/-side top -fill both -expand 1 -padx 2 -pady 3/);
+$frame = $GUI{NBFunctions}{Frame3}->Frame()->pack(qw/-side top -fill x/);
+$USERVAR{searchTarget} = 'All';
+$frame->Radiobutton(
+  -text             => 'All',
+  -value            => 'All',
+  -font             => $GUI{fonts}{normal},
+  -activebackground => 'grey95',
+  -width            => 5,
+  -anchor           => 'w',
+  -variable         => \$USERVAR{searchTarget},
+  -command          => \&isProcessReady,
+)->pack(qw/-side left -padx 3/);
+$frame->Radiobutton(
+  -text             => 'In Header only',
+  -value            => 'Header',
+  -font             => $GUI{fonts}{normal},
+  -activebackground => 'grey95',
+  -width            => 15,
+  -anchor           => 'w',
+  -variable         => \$USERVAR{searchTarget},
+  -command          => \&isProcessReady,
+)->pack(qw/-side left -padx 3/);
+$USERVAR{searchBody} = 0;
+$frame->Radiobutton(
+  -text             => 'In Body only',
+  -value            => 'Body',
+  -font             => $GUI{fonts}{normal},
+  -activebackground => 'grey95',
+  -width            => 10,
+  -anchor           => 'w',
+  -variable         => \$USERVAR{searchTarget},
+  -command          => \&isProcessReady,
+)->pack(qw/-side left -padx 3 -pady 5/);
+$GUI{searchBodyLbl} = $frame->Label(
+  -text             => '(',
+  -font             => $GUI{fonts}{normal},
+)->pack(qw/-side left/);
+$USERVAR{searchBodyText} = 1;
+$GUI{searchBodyText} = $frame->Checkbutton(
+  -text             => 'Text',
+  -font             => $GUI{fonts}{normal},
+  -activebackground => 'grey95',
+  -variable         => \$USERVAR{searchBodyText},
+  -command          => \&isProcessReady,
+)->pack(qw/-side left/);
+$USERVAR{searchBodyHTML} = 1;
+$GUI{searchBodyHTML} = $frame->Checkbutton(
+  -text             => 'HTML  )',
+  -font             => $GUI{fonts}{normal},
+  -activebackground => 'grey95',
+  -variable         => \$USERVAR{searchBodyHTML},
+  -command          => \&isProcessReady,
+)->pack(qw/-side left/);
+$frame = $GUI{NBFunctions}{Frame3}->Frame()->pack(qw/-side top -fill x/);
+$USERVAR{sourceFile} = 1;
+$frame->Checkbutton(
+  -text             => 'Add source file',
+  -font             => $GUI{fonts}{normal},
+  -activebackground => 'grey95',
+  -variable         => \$USERVAR{sourceFile},
+)->pack(qw/-side left -padx 3/);
+$frame = $GUI{NBFunctions}{Frame3}->Frame()->pack(qw/-side top -pady 2/);
+$frame = $GUI{NBFunctions}{Frame3}->Frame()->pack(qw/-side top -fill x/);
+$frame->Label(-font => $GUI{fonts}{normal}, -width => 12)->pack(qw/-side left -padx 3/);
+$frame->Checkbutton(
+  -text             => 'Match case',
+  -font             => $GUI{fonts}{normal},
+  -width            => 15,
+  -anchor           => 'w',
+  -activebackground => 'grey95',
+  -variable         => \$USERVAR{searchMatchCase},
+)->pack(qw/-side left/);
+$frame->Checkbutton(
+  -text             => 'Regex',
+  -font             => $GUI{fonts}{normal},
+  -width            => 5,
+  -anchor           => 'w',
+  -activebackground => 'grey95',
+  -variable         => \$USERVAR{searchRegex},
+  -command          => \&isProcessReady,
+)->pack(qw/-side left/);
+$frame = $GUI{NBFunctions}{Frame3}->Frame()->pack(qw/-side top -fill x/);
+$frame->Label(
+  -text             => 'Search terms:',
+  -font             => $GUI{fonts}{normal},
+  -width            => 12,
+  -anchor           => 'w',
+)->pack(qw/-side left -padx 3/);
+$GUI{searchTermsB} = $frame->Frame(-bg => 'grey95')->pack(qw/-side left -expand 1 -fill x/); # Border
+$GUI{searchTerms} = $GUI{searchTermsB}->Entry(
+  -textvariable     => \$USERVAR{searchTerms},
+  -font             => $GUI{fonts}{normal},
+  -background       => 'white',
+  -relief           => 'sunken',
+)->pack(qw/-side left -pady 3 -padx 3 -expand 1 -fill x/);
+$GUI{searchTerms}->bind('<KeyRelease>' => \&isProcessReady);
+&entryPopup($GUI{searchTerms});
+$frame = $GUI{NBFunctions}{Frame3}->Frame()->pack(qw/-side top -pady 5/);
+$frame = $GUI{NBFunctions}{Frame3}->Frame()->pack(qw/-side top -fill x -pady 2/);
+$frame->Label(
+  -text             => 'Report:',
+  -font             => $GUI{fonts}{normal},
+  -width            => 12,
+  -anchor           => 'w',
+)->pack(qw/-side left -padx 3/);
+$GUI{reportDir3} = $frame->Entry(
+  -textvariable     => \$SETTINGS{reportDir},
+  -font             => $GUI{fonts}{normal},
+  -background       => 'white',
+  -relief           => 'sunken',
+  -validate         => 'focusout',
+  -vcmd             => \&isProcessReady,
+)->pack(qw/-side left -pady 1 -padx 3 -expand 1 -fill x/);
+$GUI{reportDir3}->bind('<KeyRelease>' => \&isProcessReady);
+&entryPopup($GUI{reportDir3});
+$GUI{selSReportButton} = $frame->Button(
+  -image            => $mw->Photo(-data => $$refIMG{folder}),
+  -font             => $GUI{fonts}{normal},
+  -command          => sub {
+    my $initialDir;
+    if    ($SETTINGS{reportDir}) { $initialDir = $SETTINGS{reportDir}; }
+    elsif ($PROGDIR            ) { $initialDir = $PROGDIR;             }
+    else                         { $initialDir = '~';                  }
+    my $dir = $mw->chooseDirectory(-initialdir => $initialDir, -title => 'Choose a directory');
+    $SETTINGS{reportDir} = canonpath($dir) if defined $dir and -d $dir;
+    &saveSettings;
+  }
+)->pack(qw/-side left -padx 1/);
+$balloon->attach($GUI{selSReportButton}, -balloonmsg => 'Select a folder for report...');
+$GUI{openSDirButton} = $frame->Button(
+  -image            => $mw->Photo(-data => $$refIMG{folderOpen}),
+  -font             => $GUI{fonts}{normal},
+  -command          => sub { system("cmd /c start $SETTINGS{reportDir}") if -d $SETTINGS{reportDir}; },
+)->pack(qw/-side left -padx 1/);
+$balloon->attach($GUI{openSDirButton}, -balloonmsg => 'Open the folder in Windows Explorer...');
+$frame = $GUI{NBFunctions}{Frame3}->Frame()->pack(qw/-side top -fill x -pady 2/);
+$frame->Label(-font => $GUI{fonts}{normal}, -width => 12)->pack(qw/-side left -padx 3/);
+$frame->Checkbutton(
+  -text             => 'Open report when finished',
+  -font             => $GUI{fonts}{normal},
+  -anchor           => 'w',
+  -activebackground => 'grey95',
+  -variable         => \$SETTINGS{openReportEnd},
+  -command          => \&saveSettings,
+)->pack(qw/-side left/);
+
+# Gephi
+
+$GUI{NBFunctions}{Frame4} = $GUI{NBFunctions}{tab4}->Frame()->pack(qw/-side top -fill both -expand 1 -padx 2 -pady 3/);
+$frame = $GUI{NBFunctions}{Frame4}->Frame()->pack(qw/-side top -fill x/);
+$USERVAR{gephiReceived} = 0;
+$frame->Checkbutton(
+  -text             => 'Received',
+  -font             => $GUI{fonts}{normal},
+  -activebackground => 'grey95',
+  -width            => 15,
+  -anchor           => 'w',
+  -variable         => \$USERVAR{gephiReceived},
+  -command          => \&isProcessReady,
+)->pack(qw/-side left -padx 3/);
+$USERVAR{gephiReceivedEl} = 'both';
+$GUI{gephiReceivedEl1} = $frame->Radiobutton(
+  -text             => 'IP addresses',
+  -value            => 'IPs',
+  -font             => $GUI{fonts}{normal},
+  -activebackground => 'grey95',
+  -width            => 15,
+  -anchor           => 'w',
+  -variable         => \$USERVAR{gephiReceivedEl},
+  -state            => 'disabled',
+  -command          => \&isProcessReady,
+)->pack(qw/-side left/);
+$GUI{gephiReceivedEl2} = $frame->Radiobutton(
+  -text             => 'Hostnames',
+  -value            => 'hostnames',
+  -font             => $GUI{fonts}{normal},
+  -activebackground => 'grey95',
+  -width            => 15,
+  -anchor           => 'w',
+  -variable         => \$USERVAR{gephiReceivedEl},
+  -state            => 'disabled',
+  -command          => \&isProcessReady,
+)->pack(qw/-side left/);
+$GUI{gephiReceivedEl3} = $frame->Radiobutton(
+  -text             => 'Both',
+  -value            => 'both',
+  -font             => $GUI{fonts}{normal},
+  -activebackground => 'grey95',
+  -width            => 15,
+  -anchor           => 'w',
+  -variable         => \$USERVAR{gephiReceivedEl},
+  -state            => 'disabled',
+  -command          => \&isProcessReady,
+)->pack(qw/-side left/);
+$frame = $GUI{NBFunctions}{Frame4}->Frame()->pack(qw/-side top -fill x/);
+$frame->Label(-font => $GUI{fonts}{normal}, -width => 19)->pack(qw/-side left/);
+$USERVAR{gephiReceivedP} = 'both';
+$GUI{gephiReceivedP1} = $frame->Radiobutton(
+  -text             => 'From',
+  -value            => 'from',
+  -font             => $GUI{fonts}{normal},
+  -activebackground => 'grey95',
+  -width            => 15,
+  -anchor           => 'w',
+  -variable         => \$USERVAR{gephiReceivedP},
+  -state            => 'disabled',
+  -command          => \&isProcessReady,
+)->pack(qw/-side left/);
+$GUI{gephiReceivedP2} = $frame->Radiobutton(
+  -text             => 'By',
+  -value            => 'by',
+  -font             => $GUI{fonts}{normal},
+  -activebackground => 'grey95',
+  -width            => 15,
+  -anchor           => 'w',
+  -variable         => \$USERVAR{gephiReceivedP},
+  -state            => 'disabled',
+  -command          => \&isProcessReady,
+)->pack(qw/-side left/);
+$GUI{gephiReceivedP3} = $frame->Radiobutton(
+  -text             => 'Both',
+  -value            => 'both',
+  -font             => $GUI{fonts}{normal},
+  -activebackground => 'grey95',
+  -width            => 15,
+  -anchor           => 'w',
+  -variable         => \$USERVAR{gephiReceivedP},
+  -state            => 'disabled',
+  -command          => \&isProcessReady,
+)->pack(qw/-side left/);
+$frame = $GUI{NBFunctions}{Frame4}->Frame()->pack(qw/-side top -fill x/);
+$USERVAR{gephiEmails} = 0;
+$frame->Checkbutton(
+  -text             => 'Emails',
+  -font             => $GUI{fonts}{normal},
+  -activebackground => 'grey95',
+  -width            => 15,
+  -anchor           => 'w',
+  -variable         => \$USERVAR{gephiEmails},
+  -command          => \&isProcessReady,
+)->pack(qw/-side left -padx 3 -pady 5/);
+$USERVAR{gephiEmailsEl} = 'both';
+$GUI{gephiEmailsEl1} = $frame->Radiobutton(
+  -text             => 'Name',
+  -value            => 'name',
+  -font             => $GUI{fonts}{normal},
+  -activebackground => 'grey95',
+  -width            => 15,
+  -anchor           => 'w',
+  -variable         => \$USERVAR{gephiEmailsEl},
+  -state            => 'disabled',
+  -command          => \&isProcessReady,
+)->pack(qw/-side left/);
+$GUI{gephiEmailsEl2} = $frame->Radiobutton(
+  -text             => 'Address',
+  -value            => 'address',
+  -font             => $GUI{fonts}{normal},
+  -activebackground => 'grey95',
+  -width            => 15,
+  -anchor           => 'w',
+  -variable         => \$USERVAR{gephiEmailsEl},
+  -state            => 'disabled',
+  -command          => \&isProcessReady,
+)->pack(qw/-side left/);
+$GUI{gephiEmailsEl3} = $frame->Radiobutton(
+  -text             => 'Both',
+  -value            => 'both',
+  -font             => $GUI{fonts}{normal},
+  -activebackground => 'grey95',
+  -width            => 15,
+  -anchor           => 'w',
+  -variable         => \$USERVAR{gephiEmailsEl},
+  -state            => 'disabled',
+  -command          => \&isProcessReady,
+)->pack(qw/-side left/);
+$frame = $GUI{NBFunctions}{Frame4}->Frame()->pack(qw/-side top -pady 5/);
+$frame = $GUI{NBFunctions}{Frame4}->Frame()->pack(qw/-side top -fill x -padx 2 -pady 2/);
+$frame->Label(
+  -text             => 'Destination:',
+  -font             => $GUI{fonts}{normal},
+  -width            => 10,
+  -anchor           => 'w',
+)->pack(qw/-side left/);
+$GUI{reportDir4} = $frame->Entry(
+  -textvariable     => \$SETTINGS{reportDir},
+  -font             => $GUI{fonts}{normal},
+  -background       => 'white',
+  -relief           => 'sunken',
+  -validate         => 'focusout',
+  -vcmd             => \&isProcessReady,
+)->pack(qw/-side left -pady 1 -padx 3 -expand 1 -fill x/);
+$GUI{reportDir4}->bind('<KeyRelease>' => \&isProcessReady);
+&entryPopup($GUI{reportDir4});
+$GUI{selDirButton3} = $frame->Button(
+  -image            => $mw->Photo(-data => $$refIMG{folder}),
+  -font             => $GUI{fonts}{normal},
+  -command          => sub {
+    my $initialDir;
+    if    ($SETTINGS{reportDir}) { $initialDir = $SETTINGS{reportDir}; }
+    elsif ($PROGDIR            ) { $initialDir = $PROGDIR;             }
+    else                         { $initialDir = '~';                  }
+    my $dir = $mw->chooseDirectory(-initialdir => $initialDir, -title => 'Choose a directory');
+    $SETTINGS{reportDir} = canonpath($dir) if defined $dir and -d $dir;
+    &saveSettings;
+  }
+)->pack(qw/-side left -padx 1/);
+$balloon->attach($GUI{selDirButton3}, -balloonmsg => 'Select an output folder...');
+$GUI{OpenDirButton3} = $frame->Button(
+  -image            => $mw->Photo(-data => $$refIMG{folderOpen}),
+  -font             => $GUI{fonts}{normal},
+  -command          => sub { system("cmd /c start $SETTINGS{reportDir}") if -d $SETTINGS{reportDir}; },
+)->pack(qw/-side left -padx 1/);
+$balloon->attach($GUI{OpenDirButton3}, -balloonmsg => 'Open the folder in Windows Explorer...');
+$frame = $GUI{NBFunctions}{Frame4}->Frame()->pack(qw/-side top -fill x -pady 2/);
+$frame->Label(-font => $GUI{fonts}{normal}, -width => 10)->pack(qw/-side left/);
+$SETTINGS{openDirEnd} = 1;
+$frame->Checkbutton(
+  -text             => 'Open folder when finished',
+  -font             => $GUI{fonts}{normal},
+  -anchor           => 'w',
+  -activebackground => 'grey95',
+  -variable         => \$SETTINGS{openDirEnd},
+  -command          => \&saveSettings,
+)->pack(qw/-side left/);
+
+# Bottom (status and Button menu)
+
+$frame        = $mw->Frame(       )->pack(qw/-side bottom -fill x/);
+my $leftFrame = $frame->Frame(    )->pack(qw/-side left -padx 5 -fill x -expand 1/);
+my $frame1    = $leftFrame->Frame()->pack(qw/-side top -fill x/);
+my $frame2    = $leftFrame->Frame()->pack(qw/-side top -fill x/);
+my $frame1l   = $frame1->Frame(   )->pack(qw/-side left -fill x -expand 1/);
+$GUI{errorMsg} = $frame1l->Label(
+  -textvariable => \$GUI{status}{st},
+  -font         => $GUI{fonts}{normalB},
+  -foreground   => 'blue',
+  -anchor       => 'w')->pack(qw/-side left -fill x -expand 1/);
+$frame1l = $frame2->Frame()->pack(qw/-side left -fill x -expand 1/);
+$frame1l->ProgressBar(
+  -from         => 0,
+  -to           => 100,
+  -blocks       => 100,
+  -gap          => 0,
+  -colors       => [0, 'blue'],
+  -troughcolor  => 'grey95',
+  -variable     => \$GUI{status}{pb})->pack(qw/-side left -padx 2 -pady 2 -fill both -expand 1/);
+$frame1l->Label(
+  -foreground   => 'blue',
+  -width        => '8',
+  -textvariable => \$GUI{status}{pt},
+  -font         => $GUI{fonts}{normal},
+  -anchor       => 'w')->pack(qw/-side left -fill y/);
+$GUI{infoButton} = $frame->Button(
+  -image        => $mw->Photo(-data => $$refIMG{info}),
+  -font         => $GUI{fonts}{normal},
+  -command      => \&showAbout,
+)->pack(qw/-side right -padx 3 -pady 5/);
+$balloon->attach($GUI{infoButton}, -balloonmsg => 'About...');
+$GUI{helpButton} = $frame->Button(
+  -image        => $mw->Photo(-data => $$refIMG{help}),
+  -font         => $GUI{fonts}{normal},
+  -command      => sub { system("cmd /c start $URL_DOC"); }
+)->pack(qw/-side right -padx 3 -pady 5/);
+$balloon->attach($GUI{helpButton}, -balloonmsg => 'See documentation');
+$GUI{settingsButton} = $frame->Button(
+  -image        => $mw->Photo(-data => $$refIMG{settings}),
+  -font         => $GUI{fonts}{normal},
+  -command      => sub {
+    if (-e $SETTINGS{logFile}) { $GUI{openLogButton}->configure(-state => 'normal');   }
+    else                       { $GUI{openLogButton}->configure(-state => 'disabled'); }
+    $GUI{winSettings}->update();
+    $GUI{winSettings}->Show();
+  },
+)->pack(qw/-side right -padx 3 -pady 5/);
+$balloon->attach($GUI{settingsButton}, -balloonmsg => 'Open settings window...');
+$GUI{processButton} = $frame->Button(
+  -image        => $mw->Photo(-data => $$refIMG{process}),
+  -font         => $GUI{fonts}{normal},
+  -command      => \&process,
+)->pack(qw/-side right -padx 3 -pady 5/);
+$balloon->attach($GUI{processButton}, -balloonmsg => 'Process');
+$frame = undef;
+
+#------------------------------------------------------------------------------#
+# Right click popup menu
+#------------------------------------------------------------------------------#
+sub entryPopup {
+  my $obj  = shift;
+  my $menu = $mw->Menu(
+    -tearoff   => 0,
+    -menuitems => [
+    [qw/command Cut/        , -command => ['clipboardCut'  , $obj,]],
+    [qw/command Copy/       , -command => ['clipboardCopy' , $obj,]],
+    [qw/command Paste/      , -command => ['clipboardPaste', $obj,]],
+    [command => 'Select All', -command => [
+     sub { $_[0]->selectionRange(0, 'end'); },$obj,]],
+  ]);
+  $obj->menu($menu);
+  $obj->bind('<3>', ['PostPopupMenu', Ev('X'), Ev('Y'), ]);
+  return $obj;
+}
+#------------------------------------------------------------------------------#
+# Window - Select Fields
+#------------------------------------------------------------------------------#
+sub createWinFieldsSel {
+  my ($winFieldId, $refList1, $refList2) = @_;
+  my $winId = 'winFieldsSel'.$winFieldId;
+  $GUI{$winId} = $mw->DialogBox(
+  -title          => "Select Fields", 
+  -popover        => undef,
+  -buttons        => ["OK"], 
+  -default_button => 'OK');
+  $GUI{$winId}->minsize(370, 288);
+  $GUI{$winId}->iconimage($icon);
+  # List 1: Typical fields
+  my $title1 = $GUI{$winId}->Label(-text => 'Typical fields:');
+  my $list1  = $GUI{$winId}->Scrolled('Listbox',
+                                     -background   => 'white',
+                                     -width        => 25,
+                                     -height       => 13,
+                                     -listvariable => $refList1,
+                                     -scrollbars   => 'osoe',
+                                     -selectmode   => 'extended');
+  # List 2: Selection
+  my $selList    = $winId.'_selected';
+  my $title2     = $GUI{$winId}->Label(-text => 'Selected fields:'); 
+  $GUI{$selList} = $GUI{$winId}->Scrolled('Listbox',
+                                                 -background   => 'white',
+                                                 -width        => 25,
+                                                 -height       => 13,
+                                                 -listvariable => $refList2,
+                                                 -scrollbars   => 'osoe',
+                                                 -selectmode   => 'extended');
+  # Buttons
+  my $right = $GUI{$winId}->Button( # Move element(s) from List 1 to List 2
+    -text    => '>>',
+    -command => sub {
+      my @selected = $list1->curselection();
+      foreach my $sel (sort { $b <=> $a } @selected) {
+        push(@{$refList2}, $$refList1[$sel]);
+        splice(@{$refList1},$sel,1);
+      }
+    }, 
+  );
+  my $left = $GUI{$winId}->Button( # Move element(s) from List 2 to List 1
+    -text    => '<<',
+    -command => sub {
+      my @selected = $GUI{$selList}->curselection();
+      foreach my $sel (sort { $b <=> $a } @selected) {
+        push(@{$refList1}, $$refList2[$sel]);
+        splice(@{$refList2},$sel,1);
+      }
+    }, 
+  );
+  my $up = $GUI{$winId}->Button( # Move element(s) up in list 2
+    -text    => "\x{2BC5}",
+    -command => sub {
+      my @selected = $GUI{$selList}->curselection();
+      foreach my $sel (@selected) {
+        splice(@{$refList2}, $sel-1, 0, splice(@{$refList2}, $sel, 1)) if $sel;
+      }
+      $GUI{$selList}->selectionClear(0, 'end'); # Unselect all
+      $GUI{$selList}->selectionSet($selected[0]-1, $selected[-1]-1); # Select new position
+    }, 
+  );
+  my $down = $GUI{$winId}->Button( # Move element(s) down in list 2
+    -text    => "\x{2BC6}",
+    -command => sub {
+      my @selected = $GUI{$selList}->curselection();
+      foreach my $sel (sort { $b <=> $a } @selected) {
+        splice(@{$refList2}, $sel+1, 0, splice(@{$refList2}, $sel, 1)) if $sel < (scalar(@{$refList2})-1);
+      }
+      $GUI{$selList}->selectionClear(0, 'end'); # Unselect all
+      $GUI{$selList}->selectionSet($selected[0]+1, $selected[-1]+1); # Select new position
+    }, 
+  );
+  my $note = $GUI{$winId}->Label(-text => 'Note: X-_Fields_ include all available fields beginning with "X-".'); 
+  # Grid
+  $title1->grid('-', $title2);
+  $list1->grid($right, $GUI{$selList}, $up);
+  $list1->grid($left, $GUI{$selList}, $down);
+  $list1->grid(-rowspan => 2 );
+  $GUI{$selList}->grid(-rowspan => 2);
+  $note->grid(-columnspan => 4);
+  $right->grid(-sticky => 's');
+  $left->grid(-sticky => 'n');
+  $up->grid(-sticky => 's');
+  $down->grid(-sticky => 'n');
+}
+
+#------------------------------------------------------------------------------#
+# Window - Settings
+#------------------------------------------------------------------------------#
+$GUI{winSettings} = $mw->DialogBox(
+  -title          => 'Settings',
+  -popover        => undef,
+  -background     => 'grey95',
+  -buttons        => ["Close"], 
+  -default_button => 'Close'
+);
+$GUI{winSettings}->minsize(600, 280);
+$GUI{winSettings}->iconimage($icon);
+$GUI{winSettings}->Label(
+  -width              => 140,
+  -background         => 'grey95',
+  -image              => $mw->Photo(-data => $$refIMG{settings128}),
+  -anchor             => 'n',
+  )->pack(qw/-side left -fill y/);
+$GUI{Settings} = $GUI{winSettings}->NoteBook(
+  -backpagecolor      => 'grey95',
+  -inactivebackground => 'lightgrey',
+  -relief             => 'flat',
+  -font               => $GUI{fonts}{normal})->pack(qw/-side left -pady 10 -fill both -expand 1/);
+$GUI{Settings}{tab1} = $GUI{Settings}->add('General'  , -underline => 0, -label => 'General'  );
+$GUI{Settings}{tab2} = $GUI{Settings}->add('Databases', -underline => 0, -label => 'Databases');
+# General tab 
+$GUI{Settings}{Frame1} = $GUI{Settings}{tab1}->Frame()->pack(qw/-side top -fill both -expand 1 -pady 3/);
+# Tool
+$frame = $GUI{Settings}{Frame1}->Frame(-background => 'steelblue2')->pack(qw/-side top -pady 5 -fill x/);
+$frame->Label(
+  -text              => 'Tool',
+  -font              => $GUI{fonts}{title},
+  -background        => 'steelblue2',
+  -foreground        => 'white',
+  -width             => 10,
+  -height            => 1,
+  -anchor            => 'w',
+)->pack(qw/-side left -padx 3/);
+$frame = $GUI{Settings}{Frame1}->Frame()->pack(qw/-side top -fill x -pady 1/);
+$frame->Button(
+  -text              => 'Open user dir...',
+  -font              => $GUI{fonts}{normal},
+  -width             => 13,
+  -background        => 'grey95',
+  -command           => sub { system("cmd /c start $USERDIR") if -d $USERDIR; },
+)->pack(qw/-side left -padx 2 -pady 3/);
+$frame->Button(
+  -text              => 'Check Update',
+  -font              => $GUI{fonts}{normal},
+  -width             => 13,
+  -background        => 'grey95',
+  -command           => [\&updateTool, 1],
+)->pack(qw/-side left -padx 2/);
+$frame->Checkbutton(
+  -text              => 'Check for update at start up',
+  -font              => $GUI{fonts}{normal},
+  -activebackground  => 'grey95',
+  -variable          => \$SETTINGS{checkUpdate},
+  -command           => \&saveSettings,
+)->pack(qw/-side left -padx 2/);
+$frame = $GUI{Settings}{Frame1}->Frame()->pack(qw/-side top -fill x -pady 1/);
+$GUI{openLogButton} = $frame->Button(
+  -text             => 'Open log file',
+  -font             => $GUI{fonts}{normal},
+  -width            => 13,
+  -background       => 'grey95',
+  -state            => 'disabled',
+  -command          => sub { system("cmd /c start $SETTINGS{logFile}") if -e $SETTINGS{logFile}; }
+)->pack(qw/-side left -padx 2/);
+$frame->Checkbutton(
+  -text             => 'Enable logging',
+  -font             => $GUI{fonts}{normal},
+  -activebackground => 'grey95',
+  -variable         => \$SETTINGS{logging},
+  -command          => \&saveSettings,
+)->pack(qw/-side left -padx 2/);
+# Functions
+$frame = $GUI{Settings}{Frame1}->Frame(-background => 'steelblue2')->pack(qw/-side top -pady 5 -fill x/);
+$frame->Label(
+  -text               => 'Functions',
+  -font               => $GUI{fonts}{title},
+  -background         => 'steelblue2',
+  -foreground         => 'white',
+  -width              => 10,
+  -height             => 1,
+  -anchor             => 'w',
+)->pack(qw/-side left -padx 3/);
+$frame = $GUI{Settings}{Frame1}->Frame()->pack(qw/-side top -fill x -pady 2/);
+$frame->Label(
+  -text               => 'Local timezone:',
+  -font               => $GUI{fonts}{normal},
+  -width              => 25,
+  -anchor             => 'w',
+)->pack(qw/-side left/);
+$GUI{Settings}{localTZ} = $frame->BrowseEntry(
+  -textvariable       => \$SETTINGS{localTZ},
+  -font               => $GUI{fonts}{normal},
+  -background         => 'white',
+  -disabledbackground => 'white',
+  -disabledforeground => 'black',
+  -state              => 'readonly',
+  -width              => 30,
+  -listwidth          => 235,
+  -listheight         => 15,
+  -browsecmd          => \&saveSettings,
+)->pack(qw/-side left -padx 10 -fill x -expand 1/);
+$frame = $GUI{Settings}{Frame1}->Frame()->pack(qw/-side top -fill x -pady 2/);
+$frame->Label(
+  -text               => 'Parse headers typical fields:',
+  -font               => $GUI{fonts}{normal},
+  -width              => 25,
+  -anchor             => 'w',
+)->pack(qw/-side left/);
+$frame->Button(
+  -text             => 'Select fields...',
+  -font             => $GUI{fonts}{normal},
+  -width            => 15,
+  -background       => 'grey95',
+  -command          => [\&selectFields, 3],
+)->pack(qw/-side left -padx 10/);
+$frame = $GUI{Settings}{Frame1}->Frame()->pack(qw/-side top -fill x -pady 2/);
+$frame->Label(
+  -text               => 'Extract Typical fields:',
+  -font               => $GUI{fonts}{normal},
+  -width              => 25,
+  -anchor             => 'w',
+)->pack(qw/-side left/);
+$frame->Button(
+  -text             => 'Select fields...',
+  -font             => $GUI{fonts}{normal},
+  -width            => 15,
+  -background       => 'grey95',
+  -command          => [\&selectFields, 4],
+)->pack(qw/-side left -padx 10/);
+$frame = $GUI{Settings}{Frame1}->Frame()->pack(qw/-side top -fill x -pady 2/);
+$frame->Checkbutton(
+  -text             => 'Convert 6to4 addresses (2002::/16) to IPv4',
+  -font             => $GUI{fonts}{normal},
+  -activebackground => 'grey95',
+  -variable         => \$SETTINGS{convert6to4},
+  -command          => \&saveSettings,
+)->pack(qw/-side left/);
+# Databases tab
+$GUI{Settings}{Frame2} = $GUI{Settings}{tab2}->Frame()->pack(qw/-side top -fill both -expand 1 -pady 3/);
+# XL-Whois database
+$frame = $GUI{Settings}{Frame2}->Frame(-background => 'steelblue2')->pack(qw/-side top -pady 5 -fill x/);
+$frame->Label(
+  -text               => 'XL-Whois database',
+  -font               => $GUI{fonts}{title},
+  -background         => 'steelblue2',
+  -foreground         => 'white',
+  -width              => 25,
+  -height             => 1,
+  -anchor             => 'w',
+)->pack(qw/-side left -padx 3/);
+$frame = $GUI{Settings}{Frame2}->Frame()->pack(qw/-side top -fill x -padx 3 -pady 3/);
+$GUI{xlwhoisDB} = $frame->Entry(
+  -textvariable       => \$SETTINGS{xlwhoisDB},
+  -font               => $GUI{fonts}{normal},
+  -background         => 'white',
+  -relief             => 'sunken',
+  -validate           => 'focusout',
+  -vcmd               => sub {
+    if ($GUI{START} > 1) {
+      $SETTINGS{xlwhoisDB} = '' if $SETTINGS{xlwhoisDB} and
+                                   (!-f $SETTINGS{xlwhoisDB} or
+                                    !&validSQLiteDB($SETTINGS{xlwhoisDB}, 'WHOIS_DB'));
+      if ($SETTINGS{xlwhoisDB}) { $GUI{addISPOpt}->configure(-state => 'normal'  ); }
+      else                      { $GUI{addISPOpt}->configure(-state => 'disabled'); }
+      &saveSettings;
+    }
+  },
+)->pack(qw/-side left -pady 5 -expand 1 -fill x/);
+&entryPopup($GUI{xlwhoisDB});
+$GUI{xlwhoisDBSel} = $frame->Button(
+  -image              => $mw->Photo(-data => $$refIMG{folder}),
+  -font               => $GUI{fonts}{normal},
+  -command            => sub {
+    my $initialDir;
+    if    ($SETTINGS{xlwhoisDB} ) { $initialDir = $SETTINGS{xlwhoisDB}; }
+    elsif ($PROGDIR             ) { $initialDir = $PROGDIR;             }
+    else                          { $initialDir = '~';                  }
+    my $dbFile = $GUI{winSettings}->getOpenFile(
+      -initialdir  => $initialDir,
+      -title       => 'Select the database file',
+      -filetypes   => [['Database files', '.db'],[ 'All Files', '*']],
+      -initialfile => 'Whois.db',
+    );
+    if (defined $dbFile) { $SETTINGS{xlwhoisDB} = canonpath($dbFile); }
+    else                 { $SETTINGS{xlwhoisDB} = '';                 }
+  }
+)->pack(qw/-side left -padx 3/);
+$balloon = $GUI{winSettings}->Balloon();
+$balloon->attach($GUI{xlwhoisDBSel}, -balloonmsg => 'Select the database file...');
+# GeoIP database
+$frame = $GUI{Settings}{Frame2}->Frame(-background => 'steelblue2')->pack(qw/-side top -pady 5 -fill x/);
+$frame->Label(
+  -text               => 'GeoIP database',
+  -font               => $GUI{fonts}{title},
+  -background         => 'steelblue2',
+  -foreground         => 'white',
+  -width              => 25,
+  -height             => 1,
+  -anchor             => 'w',
+)->pack(qw/-side left -padx 3/);
+$frame = $GUI{Settings}{Frame2}->Frame()->pack(qw/-side top -fill x -padx 3 -pady 3/);
+$GUI{geoIPDB} = $frame->Entry(
+  -textvariable       => \$SETTINGS{geoIPDB},
+  -font               => $GUI{fonts}{normal},
+  -background         => 'white',
+  -relief             => 'sunken',
+  -validate           => 'focusout',
+  -vcmd               => sub {
+    if ($GUI{START} > 1) {
+      $SETTINGS{geoIPDB} = '' if $SETTINGS{geoIPDB} and
+                                 (!-f $SETTINGS{geoIPDB} or !&validGeoIPDB($SETTINGS{geoIPDB}));
+      if ($SETTINGS{geoIPDB}) { $GUI{addGeoIPOpt}->configure(-state => 'normal'  ); }
+      else                    { $GUI{addGeoIPOpt}->configure(-state => 'disabled'); }
+      &saveSettings;
+    }
+  },
+)->pack(qw/-side left -pady 5 -expand 1 -fill x/);
+&entryPopup($GUI{geoIPDB});
+$GUI{geoIPDBSel} = $frame->Button(
+  -image              => $mw->Photo(-data => $$refIMG{folder}),
+  -font               => $GUI{fonts}{normal},
+  -command            => sub {
+    my $initialDir;
+    if    ($SETTINGS{geoIPDB} ) { $initialDir = $SETTINGS{geoIPDB}; }
+    elsif ($PROGDIR           ) { $initialDir = $PROGDIR;           }
+    else                        { $initialDir = '~';                }
+    my $dbFile = $GUI{winSettings}->getOpenFile(
+      -initialdir  => $initialDir,
+      -title       => 'Select the database file',
+      -filetypes   => [['Database files', '.mmdb'],[ 'All Files', '*']],
+      -initialfile => 'GeoLite2-City.mmdb',
+    );
+    if (defined $dbFile) { $SETTINGS{geoIPDB} = canonpath($dbFile); }
+    else                 { $SETTINGS{geoIPDB} = '';                 }
+  }
+)->pack(qw/-side left -padx 3/);
+$balloon = $GUI{winSettings}->Balloon();
+$balloon->attach($GUI{geoIPDBSel}, -balloonmsg => 'Select the database file...');
+
+#------------------------------------------------------------------------------#
+# Window - About
+#------------------------------------------------------------------------------#
+sub createWinAbout {
+  $GUI{winAbout} = $mw->DialogBox(
+    -title          => "About XL-ParseMails", 
+    -popover        => undef,
+    -buttons        => ["OK"], 
+    -default_button => 'OK'
+  );
+  $GUI{winAbout}->minsize(500, 170);
+  $GUI{winAbout}->iconimage($icon);
+  $GUI{winAbout}->Label(
+    -width      => 140,
+    -background => 'grey95',
+    -image      => $mw->Photo(-data => $$refIMG{logo128}),
+    -anchor     => 'n',
+  )->pack(qw/-side left -fill y/);
+  $frame = $GUI{winAbout}->Frame()->pack(qw/-side left -fill x -pady 3/);
+  my $frame2 = $frame->Frame()->pack(qw/-side top -fill x -padx 3/);
+  $frame2->Label(
+    -text       => 'Version:',
+    -font       => $GUI{fonts}{normal},
+    -width      => 15,
+    -anchor     => 'w',
+  )->pack(qw/-side left -padx 3/);
+  $frame2->Label(
+    -text       => $VERSION,
+    -font       => $GUI{fonts}{normalB},
+    -width      => 25,
+    -anchor     => 'w',
+  )->pack(qw/-side left -padx 3/);
+  $frame2 = $frame->Frame()->pack(qw/-side top -fill x -padx 3/);
+  $frame2->Label(
+    -text       => 'Website:',
+    -font       => $GUI{fonts}{normal},
+    -width      => 15,
+    -anchor     => 'w',
+  )->pack(qw/-side left -padx 3/);
+  $frame2->Label(
+    -text       => 'http://www.le-tools.com',
+    -font       => $GUI{fonts}{normalB},
+    -width      => 25,
+    -anchor     => 'w',
+  )->pack(qw/-side left -padx 3/);
+  $frame2 = $frame->Frame()->pack(qw/-side top -fill x -padx 3/);
+  $frame2->Label(
+    -text       => 'Author:',
+    -font       => $GUI{fonts}{normal},
+    -width      => 15,
+    -anchor     => 'w',
+  )->pack(qw/-side left -padx 3/);
+  $frame2->Label(
+    -text       => 'Alain Rioux (admin@le-tools.com)',
+    -font       => $GUI{fonts}{normalB},
+    -width      => 30,
+    -anchor     => 'w',
+  )->pack(qw/-side left -padx 3/);
+  $frame2 = $frame->Frame()->pack(qw/-side top -fill x -padx 3 -pady 3/);
+  $frame2->Label(
+    -text       => "\x{00A9} Copyright 2020 Alain Rioux",
+    -font       => $GUI{fonts}{normal},
+    -width      => 35,
+    -anchor     => 'w',
+  )->pack(qw/-side left -padx 3/);
+}
+undef $balloon;
+undef $frame;
+undef $frame1;
+undef $frame1l;
+undef $frame2;
+undef $formatSel;
+undef $leftFrame;
+
+#------------------------------------------------------------------------------#
+# Launch the program
+#------------------------------------------------------------------------------#
+$GUI{START} = 1;
+# List of timezone
+my @listTZ = DateTime::TimeZone->all_names;
+foreach (@listTZ) { $GUI{Settings}{localTZ}->insert("end", $_); }
+$SETTINGS{localTZ} = 'America/New_York';
+undef @listTZ;
+&loadSettings();
+$GUI{START} = 2; # Settings loaded
+&changeReportFormat();
+&isProcessReady();
+&updateTool(0) if $SETTINGS{checkUpdate};
+MainLoop;
+
+#------------------------------------------------------------------------------#
+# Functions
+#------------------------------------------------------------------------------#
+
+#--------------------------#
+sub selectFields {
+#--------------------------#
+  my $winFieldId = shift;
+  my ($refList1, $refList2);
+  if    ($winFieldId == 1) { $refList1 = \@{$USERVAR{PH_NSEL}};  $refList2 = \@{$USERVAR{PH_SEL}};  } # In Parse Headers tab
+  elsif ($winFieldId == 2) { $refList1 = \@{$USERVAR{E_NSEL}};   $refList2 = \@{$USERVAR{E_SEL}};   } # In Extract tab
+  elsif ($winFieldId == 3) { $refList1 = \@{$USERVAR{PHT_NSEL}}; $refList2 = \@{$USERVAR{PHT_SEL}}; } # In Settings window (for Parse Headers typical)
+  elsif ($winFieldId == 4) { $refList1 = \@{$USERVAR{ET_NSEL}};  $refList2 = \@{$USERVAR{ET_SEL}};  } # In Settings window (for Extract typical)
+  &createWinFieldsSel($winFieldId, $refList1, $refList2) if !$GUI{'winFieldsSel'.$winFieldId};
+  $GUI{'winFieldsSel'.$winFieldId}->update();
+  my $return = $GUI{'winFieldsSel'.$winFieldId}->Show();
+  &isProcessReady();
+  &saveSettings if $winFieldId > 2;
+}  #--- End selectFields
+#--------------------------#
+sub changeReportFormat {
+#--------------------------#
+  if      ($SETTINGS{reportFormat} eq 'XLSX') {
+    if (!$GUI{NBFunctions}{OptSeparMenu}{PackInfo} ) { # Hide CSV option controls
+      $GUI{NBFunctions}{OptSeparMenu}{PackInfo} = [$GUI{NBFunctions}{OptSeparMenu}->packInfo];
+      $GUI{NBFunctions}{OptSeparMenu}->packForget;
+      $GUI{NBFunctions}{OptSeparLbl}{PackInfo} = [$GUI{NBFunctions}{OptSeparLbl}->packInfo];
+      $GUI{NBFunctions}{OptSeparLbl}->packForget;
+    }
+    $GUI{NBFunctions}{OptWidthLbl}->pack( @{$GUI{NBFunctions}{OptWidthLbl}{PackInfo} });
+    $GUI{NBFunctions}{OptWidthSpin}->pack(@{$GUI{NBFunctions}{OptWidthSpin}{PackInfo}});
+    $GUI{NBFunctions}{OptWidthLbl}{PackInfo}  = undef;
+    $GUI{NBFunctions}{OptWidthSpin}{PackInfo} = undef;
+  } elsif ($SETTINGS{reportFormat} eq 'CSV') {
+    if (!$GUI{NBFunctions}{OptWidthSpin}{PackInfo} ) { # Hide XLSX option controls
+      $GUI{NBFunctions}{OptWidthSpin}{PackInfo} = [$GUI{NBFunctions}{OptWidthSpin}->packInfo];
+      $GUI{NBFunctions}{OptWidthSpin}->packForget;
+      $GUI{NBFunctions}{OptWidthLbl}{PackInfo} = [$GUI{NBFunctions}{OptWidthLbl}->packInfo];
+      $GUI{NBFunctions}{OptWidthLbl}->packForget;
+    }
+    $GUI{NBFunctions}{OptSeparLbl}->pack( @{$GUI{NBFunctions}{OptSeparLbl}{PackInfo} });
+    $GUI{NBFunctions}{OptSeparMenu}->pack(@{$GUI{NBFunctions}{OptSeparMenu}{PackInfo}});
+    $GUI{NBFunctions}{OptSeparLbl}{PackInfo}  = undef;
+    $GUI{NBFunctions}{OptSeparMenu}{PackInfo} = undef;
+  } else {
+    if (!$GUI{NBFunctions}{OptWidthSpin}{PackInfo} ) { # Hide XLSX option controls
+      $GUI{NBFunctions}{OptWidthSpin}{PackInfo} = [$GUI{NBFunctions}{OptWidthSpin}->packInfo];
+      $GUI{NBFunctions}{OptWidthSpin}->packForget;
+      $GUI{NBFunctions}{OptWidthLbl}{PackInfo} = [$GUI{NBFunctions}{OptWidthLbl}->packInfo];
+      $GUI{NBFunctions}{OptWidthLbl}->packForget;
+    }
+    if (!$GUI{NBFunctions}{OptSeparMenu}{PackInfo} ) { # Hide CSV option controls
+      $GUI{NBFunctions}{OptSeparMenu}{PackInfo} = [$GUI{NBFunctions}{OptSeparMenu}->packInfo];
+      $GUI{NBFunctions}{OptSeparMenu}->packForget;
+      $GUI{NBFunctions}{OptSeparLbl}{PackInfo} = [$GUI{NBFunctions}{OptSeparLbl}->packInfo];
+      $GUI{NBFunctions}{OptSeparLbl}->packForget;
+    }    
+  }
+  
+}  #--- End changeReportFormat
+#--------------------------#
+sub showAbout {
+#--------------------------#
+  &createWinAbout if !$GUI{winAbout};
+  $GUI{winAbout}->update();
+  my $return = $GUI{winAbout}->Show();
+  &isProcessReady();
+}  #--- End showAbout
+#--------------------------#
+sub exitMain {
+#--------------------------#
+  Tk::exit;
+  exit(0);
+}  #--- End exitMain
+#--------------------------#
+sub isProcessReady {
+#--------------------------#
+  return(0) if !$GUI{START};
+  # Reset message
+  $GUI{status}{st} = '';
+  $GUI{'errorBalloon'}->destroy() if $GUI{'errorBalloon'};
+  # Test input
+  my $nextStep;
+  $GUI{'errorBalloon'} = $mw->Balloon(-balloonposition => 'mouse');
+  $nextStep = 'You must select a valid dir as input.' if !$USERVAR{input};
+  # Test functions
+  if ($GUI{NBFunctions}->raised() eq 'ParseHeaders') {
+    if ($USERVAR{parseFields} eq 'choose') {
+      $GUI{selectFieldsBut}->configure(-state => 'normal');
+      if (scalar(@{$USERVAR{PH_SEL}})) {
+        if (scalar(@{$USERVAR{PH_SEL}})) {
+          my $isReceived = 0;
+          foreach my $selField (@{$USERVAR{PH_SEL}}) { $isReceived = 1 if $selField eq 'Received'; }
+          if ($isReceived) { $GUI{allReceivedCheck}->configure(-state => 'normal'  ); }
+          else             { $GUI{allReceivedCheck}->configure(-state => 'disabled'); }
+        } else { $nextStep = 'You must choose at least one field.' if !$nextStep; }
+      }
+    } else { $GUI{selectFieldsBut}->configure(-state => 'disabled'); }
+    $nextStep = 'You must select a folder for report.' if !$nextStep and !$SETTINGS{reportDir};
+  } elsif ($GUI{NBFunctions}->raised() eq 'Extract') {
+    $nextStep = 'You must select at least one element to extract'
+      if !$nextStep and ((!$USERVAR{extractHeaders}  and !$USERVAR{extractBody} and !$USERVAR{extractAttach}) or
+                         (!$USERVAR{extractHeaders}  and  $USERVAR{extractBody} and !$USERVAR{extractAttach}  and
+                          !$USERVAR{extractBodyText} and !$USERVAR{extractBodyHTML}));
+    if ($USERVAR{extractHeaders}) {
+      $GUI{extractHeaderF1}->configure(-state => 'normal');
+      $GUI{extractHeaderF2}->configure(-state => 'normal');
+      $GUI{extractHeaderF3}->configure(-state => 'normal');
+      if ($USERVAR{extractHeaderF} eq 'choose') {
+        $GUI{selectFieldsButE}->configure(-state => 'normal');
+      } else {
+        $GUI{selectFieldsButE}->configure(-state => 'disabled');
+      }
+    } else {
+      $GUI{extractHeaderF1}->configure( -state => 'disabled');
+      $GUI{extractHeaderF2}->configure( -state => 'disabled');
+      $GUI{extractHeaderF3}->configure( -state => 'disabled');
+      $GUI{selectFieldsButE}->configure(-state => 'disabled');
+    }
+    if ($USERVAR{extractBody}) {
+      $GUI{extractBodyText}->configure(-state => 'normal');
+      $GUI{extractBodyHTML}->configure(-state => 'normal');
+    } else {
+      $GUI{extractBodyText}->configure(-state => 'disabled');
+      $GUI{extractBodyHTML}->configure(-state => 'disabled');
+    }
+    if ($USERVAR{extractHeaders} and $USERVAR{extractBody} and $USERVAR{extractBodyText}) {
+      $GUI{extractBodyAddHeader}->configure(-state => 'normal');
+    } else {
+      $GUI{extractBodyAddHeader}->configure(-state => 'disabled');      
+    }
+    if ($USERVAR{extractAttach}) {
+      $GUI{extractAttachAll}->configure(   -state => 'normal');
+      $GUI{extractAttachImg}->configure(   -state => 'normal');
+      $GUI{extractAttachExt}->configure(   -state => 'normal');
+      $GUI{extractAttachRename}->configure(-state => 'normal');
+    } else {
+      $GUI{extractAttachAll}->configure(   -state => 'disabled');
+      $GUI{extractAttachImg}->configure(   -state => 'disabled');
+      $GUI{extractAttachExt}->configure(   -state => 'disabled');
+      $GUI{extractAttachRename}->configure(-state => 'disabled');
+    }
+    $nextStep = 'You must select a destination folder.' if !$nextStep and !$SETTINGS{reportDir};
+  } elsif ($GUI{NBFunctions}->raised() eq 'Search') {
+    $nextStep = 'You must provide a search term.'       if !$nextStep and !$USERVAR{searchTerms};
+    # Enable/Disable controls
+    if ($USERVAR{searchTarget} eq 'Header') {
+      $GUI{searchBodyLbl}->configure( -state => 'disabled');
+      $GUI{searchBodyText}->configure(-state => 'disabled');
+      $GUI{searchBodyHTML}->configure(-state => 'disabled');
+    } else {
+      $GUI{searchBodyLbl}->configure( -state => 'normal');
+      $GUI{searchBodyText}->configure(-state => 'normal');
+      $GUI{searchBodyHTML}->configure(-state => 'normal');
+    }
+    # Validate regex
+    if ($USERVAR{searchRegex} and $USERVAR{searchTerms}) {
+      my ($statusRegex, $msg) = &validRegex($USERVAR{searchTerms});
+      if      ($statusRegex == 2) {
+        $GUI{searchTermsB}->configure(-bg => 'warning');
+      } elsif ($statusRegex == 1) {
+        $GUI{searchTermsB}->configure(-bg => 'red');
+        $nextStep = 'Your regex is not valid: '.$msg;
+      } else { $GUI{searchTermsB}->configure(-bg => 'green'); }
+    } elsif (!$USERVAR{searchRegex}) { $GUI{searchTermsB}->configure(-bg => 'grey95'); }
+    $nextStep = 'You must select a folder for report.' if !$nextStep and !$SETTINGS{reportDir};
+  } elsif ($GUI{NBFunctions}->raised() eq 'Gephi') {
+    $nextStep = 'You must select at least one element' if !$USERVAR{gephiReceived} and !$USERVAR{gephiEmails};
+    if ($USERVAR{gephiReceived}) {
+      $GUI{gephiReceivedEl1}->configure(-state => 'normal');
+      $GUI{gephiReceivedEl2}->configure(-state => 'normal');
+      $GUI{gephiReceivedEl3}->configure(-state => 'normal');
+      $GUI{gephiReceivedP1}->configure( -state => 'normal');
+      $GUI{gephiReceivedP2}->configure( -state => 'normal');
+      $GUI{gephiReceivedP3}->configure( -state => 'normal');
+    } else {
+      $GUI{gephiReceivedEl1}->configure(-state => 'disabled');
+      $GUI{gephiReceivedEl2}->configure(-state => 'disabled');
+      $GUI{gephiReceivedEl3}->configure(-state => 'disabled');
+      $GUI{gephiReceivedP1}->configure( -state => 'disabled');
+      $GUI{gephiReceivedP2}->configure( -state => 'disabled');
+      $GUI{gephiReceivedP3}->configure( -state => 'disabled');
+    }
+    if ($USERVAR{gephiEmails}) {
+      $GUI{gephiEmailsEl1}->configure(-state => 'normal');
+      $GUI{gephiEmailsEl2}->configure(-state => 'normal');
+      $GUI{gephiEmailsEl3}->configure(-state => 'normal');
+    } else {
+      $GUI{gephiEmailsEl1}->configure(-state => 'disabled');
+      $GUI{gephiEmailsEl2}->configure(-state => 'disabled');
+      $GUI{gephiEmailsEl3}->configure(-state => 'disabled');
+    }    
+    $nextStep = 'You must select a destination folder.' if !$nextStep and !$SETTINGS{reportDir};
+  }
+  # Show message
+  if ($nextStep) {
+    $GUI{processButton}->configure(-state => 'disabled');
+    $GUI{status}{st} = 'Not Ready? Look Here';
+    $GUI{'errorBalloon'}->attach($GUI{errorMsg}, -balloonmsg => $nextStep);
+    return(1);
+  } else {
+    $GUI{processButton}->configure(-state => 'normal'  );
+    return(1);
+  }
+}  #--- End isProcessReady
+#--------------------------#
+sub process {
+#--------------------------#
+  my $error = 0;
+  # Check destination folder
+  if      (!$SETTINGS{reportDir}) {
+    my $initialDir;
+    if    ($SETTINGS{reportDir}) { $initialDir = $SETTINGS{reportDir}; }
+    elsif ($PROGDIR            ) { $initialDir = $PROGDIR;             }
+    else                         { $initialDir = '~';                  }
+    my $dir = $mw->chooseDirectory(-initialdir => $initialDir, -title => 'Choose a destination directory');
+    if (defined $dir and -d $dir) {
+      $SETTINGS{reportDir} = canonpath($dir);
+      &saveSettings;
+    } else { return(1); }
+  } elsif (!-d $SETTINGS{reportDir}) { # The directory doesn't exist, create it?
+    my $answer = $mw->messageBox(-title   => 'Destination folder',
+                                 -message => 'Destination folder does not exist. Create it?',
+                                 -type    => 'YesNo',
+                                 -icon    => 'question',
+                                 -default => 'Yes');
+    if ($answer eq 'Yes') {
+      if (!(make_path($SETTINGS{reportDir}))) {
+        &logError("Can't create destination folder: $!") if $SETTINGS{logging};
+        $mw->messageBox(-title => 'Error',
+                        -message => "Can't create destination folder: $!",
+                        -type    => 'Ok',
+                        -icon    => 'error',
+                        -default => 'Ok');
+        return(1);
+      } else { &saveSettings; }
+    } else { return(1); }
+  }
+  # List files
+  my (@files, @subFolders);
+  if (opendir(DIR, "$USERVAR{input}\\")) {
+    while (my $file = readdir(DIR)) {
+      my $filePath = "$USERVAR{input}\\$file";
+      if (-d $filePath and $file !~ /^\.\.?$/ and $file ne 'System Volume Information') {
+        push(@subFolders, $filePath) if $USERVAR{subfolders};
+      } elsif (($file =~ /\.msg$/ and $USERVAR{formatMSG}) or
+               ($file =~ /\.eml$/ and $USERVAR{formatEML})) {
+        push(@files, encode('cp1252', $filePath));
+      }
+    }
+    closedir(DIR);
+  } else { &logError("Can't open $USERVAR{input}: $!") if $SETTINGS{logging}; $error++; }
+  # List folders and files in subfolders
+  if ($USERVAR{subfolders} and scalar(@subFolders) > 0) {
+    foreach my $subFolder (@subFolders) {
+      if (opendir(DIR,"$subFolder\\")) {
+        while (my $file = readdir(DIR)) {
+          my $filePath = "$subFolder\\$file";
+          if (-d $filePath and $file !~ /^\.\.?$/ and $file ne 'System Volume Information') {
+            push(@subFolders, $filePath) if $USERVAR{subfolders};
+          } elsif (($file =~ /\.msg$/ and $USERVAR{formatMSG}) or
+                   ($file =~ /\.eml$/ and $USERVAR{formatEML})) {
+            push(@files, encode('cp1252', $filePath));
+          }
+        }
+        closedir(DIR);
+      } else { &logError("Can't open $subFolder: $!") if $SETTINGS{logging}; $error++; }
+    }
+  }
+  # Function
+  if (scalar(@files)) {
+    if    ($GUI{NBFunctions}->raised() eq 'ParseHeaders') { $error += &parseHeaders(\@files); }
+    elsif ($GUI{NBFunctions}->raised() eq 'Extract'     ) { $error += &extract(     \@files); }
+    elsif ($GUI{NBFunctions}->raised() eq 'Search'      ) { $error += &search(      \@files); }
+    elsif ($GUI{NBFunctions}->raised() eq 'Gephi'       ) { $error += &gephi(       \@files); }
+  }
+  # Warn user about errors
+  if ($error) {
+    my $answer = $mw->messageBox(-title   => 'Error',
+                                 -message => 'There was at least one error, open the log file?',
+                                 -type    => 'YesNo',
+                                 -icon    => 'error',
+                                 -default => 'Yes');
+    system("cmd /c start $LOGGING_FILE") if $answer eq 'Yes' and -e $LOGGING_FILE;
+  }
+}  #--- End process
+#--------------------------#
+sub parseHeaders {
+#--------------------------#
+  my $refFiles = shift;
+  my $error    = 0;
+  my (@fields);
+  push(@fields, 'File') if $USERVAR{sourceFile};
+  my (%fieldsList, %data);
+  if ($USERVAR{parseFields} eq 'typical') { push(@fields, @{$USERVAR{PHT_SEL}}); }
+  if ($USERVAR{parseFields} eq 'choose' ) { push(@fields, @{$USERVAR{PH_SEL}} ); }
+  if ($USERVAR{parseFields} eq 'typical' or $USERVAR{parseFields} eq 'choose') {
+    my $i = 0;
+    foreach (@fields) { $fieldsList{uc($_)} = $i; $i++; }
+    # Add fields
+    if ($USERVAR{resNSLookup}  ) { $fieldsList{NSLOOKUP}    = $i; $i++; }
+    if ($USERVAR{resISP}       ) { $fieldsList{ISP}         = $i; $i++; }
+    if ($USERVAR{resGeoIP}     ) { $fieldsList{GEOIP}       = $i; $i++; }
+    if ($USERVAR{attachedFiles}) { $fieldsList{ATTACHMENTS} = $i; }
+  } else { $fieldsList{FILE} = 0 if $USERVAR{sourceFile}; }
+  # Extract data
+  my $i            = 0;
+  my $nbrFiles     = scalar(@{$refFiles});
+  $GUI{status}{pb} = $i;
+  $GUI{status}{pt} = "$i/$nbrFiles";
+  $GUI{status}{st} = 'Parsing email headers...';
+  foreach my $file (@{$refFiles}) {
+    my ($mime, $NSLookupStr, $ISPStr, $GeoIPStr, $attachmentStr);
+    my @receivedFields;
+    if ($file =~ /\.msg$/) {
+      if (my $msg  = new Email::Outlook::Message($file)) {
+        $mime = $msg->to_email_mime;
+      } else { &logError("Error opening $file: $!") if $SETTINGS{logging}; $error++; next; }
+    } else {
+      if (open(my $fhEml, $file)) {
+        local $/ = undef;
+        my $msg  = <$fhEml>;
+        close($fhEml);
+        $mime = Email::MIME->new($msg);
+      } else { &logError("Error opening $file: $!") if $SETTINGS{logging}; $error++; next; }
+    }
+    if (!$mime) { &logError("Error parsing $file") if $SETTINGS{logging}; $error++; next; }
+    # Get attachment filenames
+    $attachmentStr = &extractAttachmentName(\$mime) if $USERVAR{attachedFiles};
+    # Get all received fields values
+    if ($USERVAR{allReceived} and exists($mime->{header}->{headers})) {
+      my $nextRec = 0;
+      foreach my $el (@{$mime->{header}->{headers}}) {
+        if    ($nextRec         ) { push(@receivedFields, $el); $nextRec = 0; }
+        elsif ($el eq 'Received') { $nextRec = 1; }
+      }
+    }
+    my %head = $mime->header_str_pairs;
+    my $j    = scalar(keys %fieldsList);
+    foreach my $fieldName (keys %head) {
+      if ((($USERVAR{parseFields} eq 'typical' or $USERVAR{parseFields} eq 'choose') and exists($fieldsList{uc($fieldName)})) or
+          ($USERVAR{parseFields} eq 'choose' and $fieldsList{'X-_FIELDS_'} and uc($fieldName) =~ /^X-/) or
+          $USERVAR{parseFields} eq 'all') {
+        if (my $value = $head{$fieldName}) {
+          if    ($USERVAR{parseFields} eq 'all') { if (!exists($fieldsList{uc($fieldName)})) { $fieldsList{uc($fieldName)} = $j; $j++; } }
+          elsif ($USERVAR{parseFields} eq 'choose' and $fieldsList{'X-_FIELDS_'} and uc($fieldName) =~ /^X-/) {
+            if (!exists($fieldsList{uc($fieldName)})) { $fieldsList{uc($fieldName)} = $j; $j++; }
+          }
+          # Convert Datetime value in Date field
+          if ($USERVAR{convertDatetime} and uc($fieldName) eq 'DATE' and my $convertedDate = &convertDatetime($value)) {
+            $value = $convertedDate;
+          }
+          # Remove tab from Received values
+          if (uc($fieldName) eq 'RECEIVED') {
+            if ($USERVAR{allReceived} and scalar(@receivedFields)) {
+              my $newValue;
+              my $k = scalar(@receivedFields);
+              foreach my $received (@receivedFields) {
+                my $recValue;
+                if (ref($received) eq 'ARRAY') { $recValue .= $$received[0]; }
+                else                           { $recValue  = $received;     }
+                $recValue =~ s/[\t\s]/ /g;
+                if ($USERVAR{convertDatetime} and my $convertedDate = &convertDatetime($recValue)) {
+                  $recValue = $convertedDate;
+                }
+                $newValue .= "$k - $recValue|";
+                $k--;
+              }
+              chop($newValue);
+              $value = $newValue;
+            } else {
+              $value =~ s/\t//g;
+              if ($USERVAR{convertDatetime} and my $convertedDate = &convertDatetime($value)) {
+                $value = $convertedDate;
+              }
+            }
+            # Resolve NSLookup/ISP/GeoIP details
+            if ($USERVAR{resNSLookup} or $USERVAR{resISP} or $USERVAR{resGeoIP}) {
+              my %IPs;
+              my $copyValue = $value;
+              # Extract IPv4
+              while ($copyValue =~ /\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}/) {
+                my ($ip, $type) = &extractIP($copyValue);
+                $IPs{$ip}{ver}  = 'IPv4' if !exists($IPs{$ip});
+                $IPs{$ip}{type} = $type;
+                my $longLigne   = length($copyValue);
+                my $long        = length($ip);
+                my $pos         = index($copyValue, $ip);
+                my $offset      = $pos+$long;
+                $copyValue      = substr($copyValue, $offset, $longLigne-$offset);
+              }
+              # Extract IPv6
+              $copyValue = $value;
+              while ($copyValue =~ /$IPv6_re/) {
+                my ($ip, $type) = &extractIP($copyValue);
+                $IPs{$ip}{ver}  = 'IPv6' if !exists($IPs{$ip});
+                $IPs{$ip}{type} = $type;
+                my $longLigne   = length($copyValue);
+                my $long        = length($ip);
+                my $pos         = index($copyValue, $ip);
+                my $offset      = $pos+$long;
+                $copyValue      = substr($copyValue, $offset, $longLigne-$offset);
+              }
+              if ($USERVAR{resNSLookup}) {
+                foreach my $ip (keys %IPs) {
+                  if ($IPs{$ip}{type} eq 'PUBLIC') {
+                    $IPs{$ip}{nslookup} = &nsLookup($ip);
+                    $IPs{$ip}{nslookup} = '?' if !$IPs{$ip}{nslookup};
+                  } else { $IPs{$ip}{nslookup} = $IPs{$ip}{type}; }
+                  $NSLookupStr .= "$ip = $IPs{$ip}{nslookup}\|";
+                }
+                chop($NSLookupStr) if $NSLookupStr;
+              }
+              if ($USERVAR{resISP}) {
+                # Connect to XL-Whois database
+                my $dsn = "DBI:SQLite:dbname=$SETTINGS{xlwhoisDB}";
+                my $dbh = DBI->connect($dsn, undef, undef, { RaiseError => 1, AutoCommit => 1 });
+                foreach my $ip (keys %IPs) {
+                  if ($IPs{$ip}{type} eq 'PUBLIC') {
+                    if ($IPs{$ip}{ver} eq 'IPv4') { $IPs{$ip}{ISP} = &checkIP_WhoisDB_IPv4($ip, \$dbh); }
+                    else                          { $IPs{$ip}{ISP} = &checkIP_WhoisDB_IPv6($ip, \$dbh); }
+                    $IPs{$ip}{ISP} = '?' if !$IPs{$ip}{ISP};
+                  } else { $IPs{$ip}{ISP} = $IPs{$ip}{type}; }
+                  $ISPStr .= "$ip = $IPs{$ip}{ISP}\|";
+                }
+                chop($ISPStr) if $ISPStr;
+              }
+              if ($USERVAR{resGeoIP}) {
+                # Connect to GeoIP database
+                if (my $reader = GeoIP2::Database::Reader->new(file => $SETTINGS{geoIPDB}, locales => ['en'])) {
+                  foreach my $ip (keys %IPs) {
+                    if ($IPs{$ip}{type} eq 'PUBLIC') {
+                      $IPs{$ip}{GeoIP} = &resGeoIP($ip, \$reader);
+                      $IPs{$ip}{GeoIP} = '?' if !$IPs{$ip}{GeoIP};
+                    } else { $IPs{$ip}{GeoIP} = $IPs{$ip}{type}; }
+                    $GeoIPStr .= "$ip = $IPs{$ip}{GeoIP}\|";
+                  }
+                  chop($GeoIPStr) if $GeoIPStr;
+                }
+              }
+            }
+          }
+          $data{$file}{uc($fieldName)} = $value if $value;
+        }
+      }
+    }
+    $data{$file}{NSLOOKUP}    = $NSLookupStr   if $USERVAR{resNSLookup}   and $NSLookupStr;
+    $data{$file}{ISP}         = $ISPStr        if $USERVAR{resISP}        and $ISPStr;
+    $data{$file}{GEOIP}       = $GeoIPStr      if $USERVAR{resGeoIP}      and $GeoIPStr;
+    $data{$file}{ATTACHMENTS} = $attachmentStr if $USERVAR{attachedFiles} and $attachmentStr;
+    # Progress
+    $i++;
+    $GUI{status}{pt} = "$i/$nbrFiles";
+    $GUI{status}{pb} = int(($i/$nbrFiles) * 100);
+    $mw->update;
+  }
+  delete($fieldsList{'X-_FIELDS_'}) if exists($fieldsList{'X-_FIELDS_'});
+  if ($USERVAR{parseFields} eq 'all') {
+    my $i = scalar(keys %fieldsList);
+    # Add fields
+    if ($USERVAR{resNSLookup}  ) { $fieldsList{NSLOOKUP}    = $i; $i++; }
+    if ($USERVAR{resISP}       ) { $fieldsList{ISP}         = $i; $i++; }
+    if ($USERVAR{resGeoIP}     ) { $fieldsList{GEOIP}       = $i; $i++; }
+    if ($USERVAR{attachedFiles}) { $fieldsList{ATTACHMENTS} = $i; }
+  }
+  $GUI{status}{st} = '';
+  $GUI{status}{pt} = '';
+  $GUI{status}{pb} = 0;
+  # Create report
+  $GUI{status}{st} = 'Creating report...';
+  my $reportFilename = $SETTINGS{reportDir} . "\\" . 'XL-ParseMails_report_';
+  my $dateStr	= &date(time);
+     $dateStr =~ s/:/-/g;
+     $dateStr =~ s/ /_/g;
+  $reportFilename .= $dateStr . '.' . lc($SETTINGS{reportFormat});
+  if    ($SETTINGS{reportFormat} eq 'XLSX') { $error += &parseHeadersReportXLSX($reportFilename, \%data, \%fieldsList); }
+  if    ($SETTINGS{reportFormat} eq 'HTML') { $error += &parseHeadersReportHTML($reportFilename, \%data, \%fieldsList); }
+  elsif ($SETTINGS{reportFormat} eq 'CSV' ) { $error += &parseHeadersReportCSV( $reportFilename, \%data, \%fieldsList); }
+  $GUI{status}{st} = '';
+  # Open report
+  system("cmd /c start $reportFilename") if $SETTINGS{openReportEnd};
+  return($error);
+}  #--- End parseHeaders
+#--------------------------#
+sub parseHeadersReportXLSX {
+#--------------------------#
+  my ($reportFilename, $refData, $refFieldsList) = @_;
+  if (my $excel = Excel::Writer::XLSX->new($reportFilename)) {
+    # Set metadata
+    $excel->set_properties(comments => 'Generated by XL-ParseEmails '.$VERSION);
+    # Set formats
+    my $formatHeader = $excel->add_format(size => 10, valign => 'vcenter', align => 'center', bold => 1);
+    my $formatNormal = $excel->add_format(size => 10, valign => 'top');
+    my $formatWrap   = $excel->add_format(size => 10, valign => 'top', text_wrap => 1);
+    my $formatDate	 = $excel->add_format(size => 10, valign => 'top', num_format => 'yyyy-mm-dd hh:mm:ss');
+    if (my $sheet = $excel->add_worksheet('Headers')) {
+      my $col = 0;
+      my @maxColWidth;
+      # First line header
+      foreach my $fieldName (sort { $$refFieldsList{$a} <=> $$refFieldsList{$b} } keys %{$refFieldsList}) {
+        $sheet->write_string(0, $col, $fieldName, $formatHeader);
+        push(@maxColWidth, length($fieldName)+4);
+        $col++;
+      }
+      my $i = 1;
+      foreach my $file (sort keys %{$refData}) {
+        $col = 0;
+        if ($USERVAR{sourceFile}) { # Add the file column
+          my $length = length($file);
+          if ($length > $SETTINGS{maxColumWidth}) {
+            $length = $SETTINGS{maxColumWidth};
+            $sheet->write_string($i, $col, $file, $formatWrap);
+          } else { $sheet->write_string($i, $col, $file, $formatNormal); }
+          $maxColWidth[$col] = $length if ($length > $maxColWidth[$col]);
+          $col++;
+        }
+        foreach my $fieldName (sort { $$refFieldsList{$a} <=> $$refFieldsList{$b} } keys %{$refFieldsList}) {
+          if (my $value = $$refData{$file}{$fieldName}) {
+            my $length = length($value);
+            if ($length > $SETTINGS{maxColumWidth}) {
+              $length = $SETTINGS{maxColumWidth};
+              $value =~ s/\|/\r\n/g;
+              $sheet->write_string($i, $col, $value, $formatWrap);
+            } else {
+              if ($value =~ /\|/) {
+                $value =~ s/\|/\r\n/g;
+                my @lines = split(/\r\n/, $value);
+                $length = 10;
+                foreach (@lines) { $length = length($_) if (length($_) > $length); }
+                $sheet->write_string($i, $col, $value, $formatWrap);
+              } else {
+                $sheet->write_string($i, $col, $value, $formatNormal);
+              }
+            }
+            $maxColWidth[$col] = $length if ($length > $maxColWidth[$col]);
+          }
+          $col++ if $fieldName ne 'FILE';
+        }
+        $i++;
+      }
+      $col = 0;
+      foreach (@maxColWidth) { $sheet->set_column($col, $col, $_); $col++; }
+      $sheet->autofilter(0, 0, 0, --$col);
+      $sheet->freeze_panes(1, 0);
+    }
+    $excel->close();
+    return(0);
+  } else { &logError("Error creating $reportFilename: $!") if $SETTINGS{logging}; return(1); }
+}  #--- End parseHeadersReportXLSX
+#--------------------------#
+sub parseHeadersReportHTML {
+#--------------------------#
+  my ($reportFilename, $refData, $refFieldsList) = @_;
+  if (open(my $fhReport, '>:encoding(UTF-8)', $reportFilename)) {
+    flock($fhReport, 2);
+		my $timeStr = &date(time);
+    print $fhReport "<!DOCTYPE html>\n";
+    print $fhReport "<html>\n<head>\n<title>XL-ParseMails report $timeStr</title>\n";
+    print $fhReport "<meta name=\"generator\" content=\"XL-ParseMails $VERSION\">\n";
+    print $fhReport "<style>\n";
+    print $fhReport "table, td { border-collapse: collapse; border: 1px solid black; padding: 5px; }\n";
+    print $fhReport "td { font-size:11pt; vertical-align: top; white-space: wrap; }\n";
+    print $fhReport ".header { text-align: center; font-weight: bold }\n";
+    print $fhReport "</style>\n";
+    print $fhReport "</head>\n";
+    print $fhReport "<body style=\"font-family: Calibri, Verdana, Arial;\">\n";
+    print $fhReport "<table align=\"center\" width=\"100%\">\n";
+    print $fhReport "<tr>\n";
+    foreach my $fieldName (sort { $$refFieldsList{$a} <=> $$refFieldsList{$b} } keys %{$refFieldsList}) {
+      print $fhReport "<td class=\"header\">$fieldName</td>\n";
+    }
+    print $fhReport "</tr>\n";
+    foreach my $file (sort keys %{$refData}) {
+      print $fhReport "<tr>\n";
+      print $fhReport "<td>$file</td>" if $USERVAR{sourceFile};
+      foreach my $fieldName (sort { $$refFieldsList{$a} <=> $$refFieldsList{$b} } keys %{$refFieldsList}) {
+        if (my $value = $$refData{$file}{$fieldName}) {
+          $value =~ s/</&lt;/g;
+          $value =~ s/>/&gt;/g;
+          $value =~ s/\|/<br>/g;
+          print $fhReport "<td>$value</td>";
+        } else { print $fhReport "<td>&nbsp;</td>" if $fieldName ne 'FILE'; }
+      }
+      print $fhReport "</tr>\n";
+    }
+		print $fhReport "</table>\n";
+		print $fhReport "</body></html>\n";
+    close($fhReport);
+    return(0);
+  } else { &logError("Error creating $reportFilename: $!") if $SETTINGS{logging}; return(1); }
+}  #--- End parseHeadersReportHTML
+#--------------------------#
+sub parseHeadersReportCSV {
+#--------------------------#
+  my ($reportFilename, $refData, $refFieldsList) = @_;
+  my $separator = $SETTINGS{CSVSeparator};
+  $separator    = "\t" if $SETTINGS{CSVSeparator} eq 'Tab';
+  if (open(my $fhReport, '>:encoding(UTF-8)', $reportFilename)) {
+    my $line;
+    foreach my $fieldName (sort { $$refFieldsList{$a} <=> $$refFieldsList{$b} } keys %{$refFieldsList}) {
+      $line .= "$fieldName$separator";
+    }
+    chop($line);
+    print $fhReport "$line\n";
+    foreach my $file (sort keys %{$refData}) {
+      my $line;
+      $line .= "$file$separator" if $USERVAR{sourceFile};
+      foreach my $fieldName (sort { $$refFieldsList{$a} <=> $$refFieldsList{$b} } keys %{$refFieldsList}) {
+        if (my $value = $$refData{$file}{$fieldName}) {
+          $value = "\"$value\"" if $value =~ /$separator/;
+          $line .= "$value$separator";
+        } else { $line .= "$separator" if $fieldName ne 'FILE'; }
+      }
+      chop($line) if $line =~ /$separator$/;
+      print $fhReport "$line\n";
+    }
+    close($fhReport);
+    return(0);
+  } else { &logError("Error creating $reportFilename: $!") if $SETTINGS{logging}; return(1); }
+}  #--- End parseHeadersReportCSV
+#--------------------------#
+sub extractAttachmentName {
+#--------------------------#
+  my $refMime = shift;
+  my @attachments;
+  my @parts = $$refMime->parts;
+  foreach my $part (@parts) {
+    my %partHeader = $part->header_str_pairs;
+    if (!$part->subparts) {
+      if ($partHeader{'Content-Transfer-Encoding'} eq 'base64') {
+        if ($partHeader{'Content-Disposition'} =~ /attachment; filename="([^\"]+)"/) {
+          push(@attachments, $1);
+        }
+      }
+    }
+  }
+  return(join('|', @attachments));
+}  #--- End extractAttachmentName
+#--------------------------#
+sub extract {
+#--------------------------#
+  my $refFiles = shift;
+  my $error    = 0;
+  my %fileExts;
+  my %fieldsList;
+  my %attached;
+  # Fields for Extract Header
+  if ($USERVAR{extractHeaders}) {
+    my @fields;
+    if ($USERVAR{extractHeaderF} eq 'typical') { push(@fields, @{$USERVAR{ET_SEL}}); }
+    if ($USERVAR{extractHeaderF} eq 'choose' ) { push(@fields, @{$USERVAR{E_SEL}});  }
+    if ($USERVAR{extractHeaderF} eq 'typical' or $USERVAR{extractHeaderF} eq 'choose') {
+      my $i = 0;
+      foreach (@fields) { $fieldsList{uc($_)} = $i; $i++; }
+    }
+  }  
+  # Extract by extension
+  if ($USERVAR{extractAttachType} eq 'extList') {
+    my @exts = split(/, ?/, $USERVAR{extractAttachListExt});
+    foreach (@exts) { $_ =~ s/\.//g; $fileExts{$_} = 1 if !exists($fileExts{$_}); }
+  }
+  # Extract data
+  my $i            = 0;
+  my $nbrFiles     = scalar(@{$refFiles});
+  $GUI{status}{pb} = $i;
+  $GUI{status}{pt} = "$i/$nbrFiles";
+  $GUI{status}{st} = 'Extracting email content...';
+  foreach my $file (@{$refFiles}) {
+    my ($mime);
+    if ($file =~ /\.msg$/) {
+      if (my $msg  = new Email::Outlook::Message($file)) {
+        $mime = $msg->to_email_mime;
+      } else { &logError("Error opening $file: $!") if $SETTINGS{logging}; $error++; next; }
+    } else {
+      if (open(my $fhEml, $file)) {
+        local $/ = undef;
+        my $msg  = <$fhEml>;
+        close($fhEml);
+        $mime = Email::MIME->new($msg);
+      } else { &logError("Error opening $file: $!") if $SETTINGS{logging}; $error++; next; }
+    }
+    if (!$mime) { &logError("Error parsing $file") if $SETTINGS{logging}; $error++; next; }
+    # Prepare destination
+    my $filename = (split(/\\/, $file))[-1]; # Gather filename from path
+    if ($filename =~ /\./) { $filename =~ s/\.[^.]+$//; } # Remove extension
+    my $destDir  = $SETTINGS{reportDir};
+       $destDir .= "\\" . $filename if $SETTINGS{extractMultiDest};
+    my $encodedDir = encode('cp1252', $destDir);
+    mkdir $encodedDir if !-d $encodedDir;
+    my $extractBodyTxtFile  = $destDir . "\\" . $filename . '_extracted.txt';
+    my $extractBodyHTMLFile = $destDir . "\\" . $filename . '_extracted.html';
+    my $extractBodyHeaders  = $destDir . "\\" . $filename . '_headers.txt';
+    # Extract Headers
+    my $headerTxt;
+    if ($USERVAR{extractHeaders} and exists($mime->{header}->{headers})) {
+      my $record;
+      my ($nextRec, $keep) = 0;
+      foreach my $el (@{$mime->{header}->{headers}}) {
+        if (ref($el) eq 'ARRAY') { $record  = $$el[1]; $nextRec = 0; } # Eml
+        else {
+          if ($nextRec) { $record .= "$el"; $nextRec = 0; }
+          else {
+            $record  = "$el: ";
+            $nextRec = 1;
+            $keep    = 1 if $USERVAR{extractHeaderF} eq 'all' or exists($fieldsList{uc($el)}) or
+                            ($USERVAR{extractHeaderF} eq 'choose' and $fieldsList{'X-_FIELDS_'} and uc($el) =~ /^X-/);
+          }
+        }
+        if (!$nextRec and $keep) { $headerTxt .= "$record\n"; $keep = 0; }
+      }
+      if (!$USERVAR{extractBodyAddHeader}) { # Print header in separated file
+        if (open(my $fhHeader, '>:encoding(UTF-8)', encode('cp1252', $extractBodyHeaders))) {
+          print $fhHeader "$headerTxt\n";
+          close($fhHeader);
+        } else { &logError("Error creating $extractBodyHeaders: $!") if $SETTINGS{logging}; $error++; }
+      }
+    }
+    my ($bodyText, $encTxt, $typeTxt, $bodyHTML, $encHTML, $typeHTML);
+    my @parts    = $mime->parts;
+    my $nbrParts = scalar(@parts);
+    foreach my $part (@parts) {
+      my %partHeader = $part->header_str_pairs;
+      if ($nbrParts == 1 and my $body = $part->body_raw) {
+        $bodyText .= $body if $USERVAR{extractBody} and $USERVAR{extractBodyText};
+        $typeTxt  .= $mime->{ct}->{type} . "/" . $mime->{ct}->{subtype};
+        $typeTxt  .= '; charset= ' . $mime->{ct}->{attributes}->{charset};
+      } elsif ($part->subparts) {
+        my @subParts = $part->parts;
+        foreach my $subPart (@subParts) {
+          if ($subPart->content_type =~ /multipart/) {
+            my @subSubParts = $subPart->parts;
+            foreach my $subSubPart (@subSubParts) {
+              my %subSubPartHeader = $subSubPart->header_str_pairs;
+              if ($subSubPartHeader{'Content-Transfer-Encoding'} eq '8bit' or
+                  $subSubPart->content_type =~ /(?:text\/plain|quoted-printable|message\/)/) {
+                $bodyText .= $subSubPart->body_raw if $USERVAR{extractBody} and $USERVAR{extractBodyText};
+                $encTxt   .= $subSubPartHeader{'Content-Transfer-Encoding'};
+                $typeTxt  .= $subSubPart->content_type;
+              } elsif ($subSubPart->content_type =~ /text\/html/) {
+                $bodyHTML .= $subSubPart->body_raw if $USERVAR{extractBody} and $USERVAR{extractBodyHTML};
+                $encHTML  .= $subSubPartHeader{'Content-Transfer-Encoding'};
+                $typeHTML .= $subSubPart->content_type;
+              }
+            }
+          }
+          my %subPartHeader = $subPart->header_str_pairs;
+          if ($subPartHeader{'Content-Transfer-Encoding'} eq '8bit' or
+              $subPart->content_type =~ /(?:text\/plain|quoted-printable|message\/)/) {
+            $bodyText .= $subPart->body_raw if $USERVAR{extractBody} and $USERVAR{extractBodyText};
+            $encTxt   .= $subPartHeader{'Content-Transfer-Encoding'};
+            $typeTxt  .= $subPart->content_type;
+          } elsif ($subPart->content_type =~ /text\/html/) {
+            $bodyHTML .= $subPart->body_raw if $USERVAR{extractBody} and $USERVAR{extractBodyHTML};
+            $encHTML  .= $subPartHeader{'Content-Transfer-Encoding'};
+            $typeHTML .= $subPart->content_type;
+          # Attachments
+          } elsif ($subPartHeader{'Content-Transfer-Encoding'} eq 'base64' and $USERVAR{extractAttach}) {
+            $error += &extractAttached(\%subPartHeader, \$subPart, \%attached, \%fileExts, $destDir, $filename);
+          }
+        }
+      } else {
+        # Attachments
+        if ($partHeader{'Content-Transfer-Encoding'} eq 'base64' and $USERVAR{extractAttach}) {
+          $error += &extractAttached(\%partHeader, \$part, \%attached, \%fileExts, $destDir, $filename);
+        # SMTP errors (add to body text)
+        } elsif ($partHeader{'Content-Type'} =~ /message\// and
+                 $USERVAR{extractBody} and $USERVAR{extractBodyText}) {
+          $bodyText .= "\n\nAttached message: $partHeader{'Content-Type'}\n\n";
+          $bodyText .= $part->body_raw;
+        }
+      }
+    }
+    # Extract Body
+    if ($bodyText) {
+      my $fhTxt;
+      if ($typeTxt =~ /(?:windows-1252|iso-)/) {
+        if (!open($fhTxt, '>', encode('cp1252', $extractBodyTxtFile))) {
+          &logError("Error creating $extractBodyTxtFile: $!") if $SETTINGS{logging};
+          $error++;
+        }
+      } else {
+        if (!open($fhTxt, '>:encoding(UTF-8)', encode('cp1252', $extractBodyTxtFile))) {
+          &logError("Error creating $extractBodyTxtFile: $!") if $SETTINGS{logging};
+          $error++;
+        }
+      }
+      print $fhTxt "$headerTxt\n" if $USERVAR{extractBodyAddHeader} and $headerTxt; # Merge Header and Body
+      if ($fhTxt) {
+        $bodyText = decode_qp($bodyText) if $encTxt eq 'quoted-printable';
+        $bodyText = decode('utf8', $bodyText) if $file =~ /\.eml$/ and $typeTxt =~ /utf-?8/i;
+        if ($file =~ /\.msg$/) {
+          $bodyText =~ s/\r/\n/g;
+          $bodyText =~ s/[\n]+/\n/g;
+        }
+        print $fhTxt $bodyText;
+        close($fhTxt);
+      }
+    }
+    if ($bodyHTML) {
+      my $fhHTML;
+      if ($typeHTML =~ /(?:windows-1252|iso-)/) {
+        if (!open($fhHTML, '>', encode('cp1252', $extractBodyHTMLFile))) {
+          &logError("Error creating $extractBodyHTMLFile: $!") if $SETTINGS{logging};
+          $error++;
+        }
+      } else {
+        if (!open($fhHTML, '>:encoding(UTF-8)', encode('cp1252', $extractBodyHTMLFile))) {
+          &logError("Error creating $extractBodyHTMLFile: $!") if $SETTINGS{logging};
+          $error++;
+        }
+      }
+      if ($fhHTML) {
+        $bodyHTML = decode_qp($bodyHTML) if $encHTML eq 'quoted-printable';
+        $bodyHTML = decode('utf8', $bodyHTML) if $file =~ /\.eml$/ and $typeHTML =~ /utf-?8/i;
+        while ($bodyHTML =~ /src=\"cid:([^\"]+)/) {
+          my $src = $1;
+          if    (exists($attached{$src})) { $bodyHTML =~ s/src=\"cid:$src/src=\"$attached{$src}/g; }
+          elsif ($src =~ /\@/)            { $bodyHTML =~ s/src=\"cid:([^\@]+)[^\"]+\"/src=\"$1\"/g; }
+          else                            { $bodyHTML =~ s/src=\"cid:/src=\"/g; }
+        }
+        print $fhHTML $bodyHTML;
+        close($fhHTML);
+      }
+    }
+    # Progress
+    $i++;
+    $GUI{status}{pt} = "$i/$nbrFiles";
+    $GUI{status}{pb} = int(($i/$nbrFiles) * 100);
+    $mw->update;
+  }
+  $GUI{status}{st} = '';
+  $GUI{status}{pt} = '';
+  $GUI{status}{pb} = 0;
+  # Open report
+  system("cmd /c start $SETTINGS{reportDir}") if $SETTINGS{openDirEnd};
+  return($error);
+}  #--- End extract
+#--------------------------#
+sub extractAttached {
+#--------------------------#
+  my ($refPartHeader, $refPart, $refAttached, $refFileExts, $destDir, $filename) = @_;
+  if ($$refPartHeader{'Content-Type'} =~ /name="([^\"]+)"/) {
+    my $attachFN = $1;
+    my $fileExt  = (split(/\./, $attachFN))[-1];
+    my $id       = $$refPartHeader{'Content-ID'};
+    $id          =~ s/[\<\>]//g;
+    $$refAttached{$id} = $attachFN if $id;
+    # Extract Attachments
+    if ($USERVAR{extractAttachType} eq 'all' or
+       ($USERVAR{extractAttachType} eq 'image'   and $$refPartHeader{'Content-Type'} =~ /image\//) or 
+       ($USERVAR{extractAttachType} eq 'extList' and exists($$refFileExts{$fileExt}))) {
+      my $attachPath  = $destDir . "\\";
+         $attachPath .= $filename . '_' if $USERVAR{extractAttachRename};
+         $attachPath .= $attachFN;
+      # If filename exists, rename it
+      my $k = 1;
+      while (-e $attachPath) {
+        if ($attachPath =~ /(\.[^\.]+)$/) { # File with extension
+          my $fileExt = $1;
+          if ($attachPath =~ /_\((\d+)\)$fileExt/) { # A renamed file already exists ( _(digit) )
+            $k = $1; $k++;
+            $attachPath =~ s/_\(\d+\)$fileExt/_($k)$fileExt/;  # Ex.: _(1) becomes _(2)
+          } else { $attachPath =~ s/$fileExt/_($k)$fileExt/; } # Add _(digit)
+        } else { $attachPath .= "_($k)"; }
+        $k++;
+      }
+      if (open(my $fhAttach, '>', encode('cp1252', $attachPath))) {
+        binmode($fhAttach);
+        my $base64 = $$refPart->body_raw;
+           $base64 =~ s/\r/\n/g;
+           $base64 =~ s/[\n]+/\n/g;
+        print $fhAttach decode_base64($base64);
+        close($fhAttach);
+        return(0);
+      } else { &logError("Error creating $attachPath: $!") if $SETTINGS{logging}; return(1); }
+    }
+  }
+
+}  #--- End extractAttached
+#--------------------------#
+sub search {
+#--------------------------#
+  my $refFiles = shift;
+  my $error    = 0;
+  my $reportFilename = $SETTINGS{reportDir} . "\\" . 'XL-ParseMails_report_';
+  my $dateStr	= &date(time);
+     $dateStr =~ s/:/-/g;
+     $dateStr =~ s/ /_/g;
+  $reportFilename .= $dateStr . '.txt';
+  my $nbrRes = 0;
+  if (open(my $fhReport, '>:encoding(UTF-8)', $reportFilename)) {
+    # Extract data
+    my $i            = 0;
+    my $nbrFiles     = scalar(@{$refFiles});
+    $GUI{status}{pb} = $i;
+    $GUI{status}{pt} = "$i/$nbrFiles";
+    $GUI{status}{st} = 'Searching in email...';
+    foreach my $file (@{$refFiles}) {
+      my ($mime);
+      if ($file =~ /\.msg$/) {
+        if (my $msg  = new Email::Outlook::Message($file)) {
+          $mime = $msg->to_email_mime;
+        } else { &logError("Error opening $file: $!") if $SETTINGS{logging}; $error++; next; }
+      } else {
+        if (open(my $fhEml, $file)) {
+          local $/ = undef;
+          my $msg  = <$fhEml>;
+          close($fhEml);
+          $mime = Email::MIME->new($msg);
+        } else { &logError("Error opening $file: $!") if $SETTINGS{logging}; $error++; next; }
+      }
+      if (!$mime) { &logError("Error parsing $file") if $SETTINGS{logging}; $error++; next; }
+      my @lines;
+      # Search Headers
+      if ($USERVAR{searchTarget} eq 'All' or
+          ($USERVAR{searchTarget} eq 'Header' and exists($mime->{header}->{headers}))) {
+        my $record;
+        my $nextRec = 0;
+        foreach my $el (@{$mime->{header}->{headers}}) {
+          if (ref($el) eq 'ARRAY') { $record = $$el[1]; $nextRec = 0; } # Eml
+          else {
+            if ($nextRec) { $record .= "$el"; $nextRec = 0; }
+            else          { $record  = "$el: "; $nextRec = 1; }
+          }
+          push(@lines, $record);
+        }
+      }
+      if ($USERVAR{searchTarget} eq 'All' or $USERVAR{searchTarget} eq 'Body') {
+        # Search Body
+        my ($bodyText, $encTxt, $typeTxt, $bodyHTML, $encHTML, $typeHTML);
+        my @parts = $mime->parts;
+        foreach my $part (@parts) {
+          my %partHeader = $part->header_str_pairs;
+          if ($part->subparts) {
+            my @subParts = $part->parts;
+            foreach my $subPart (@subParts) {
+              if ($subPart->content_type =~ /multipart/) {
+                my @subSubParts = $subPart->parts;
+                foreach my $subSubPart (@subSubParts) {
+                  my %subSubPartHeader = $subSubPart->header_str_pairs;
+                  if ($subSubPartHeader{'Content-Transfer-Encoding'} eq '8bit' or
+                      $subSubPart->content_type =~ /(?:text\/plain|quoted-printable)/) {
+                    $bodyText = $subSubPart->body_raw if $USERVAR{searchBodyText};
+                    $encTxt   = $subSubPartHeader{'Content-Transfer-Encoding'};
+                    $typeTxt  = $subSubPart->content_type;
+                  } elsif ($subSubPart->content_type =~ /text\/html/) {
+                    $bodyHTML = $subSubPart->body_raw if $USERVAR{searchBodyHTML};
+                    $encHTML  = $subSubPartHeader{'Content-Transfer-Encoding'};
+                    $typeHTML = $subSubPart->content_type;
+                  }
+                }
+              }
+              my %subPartHeader = $subPart->header_str_pairs;
+              if ($subPartHeader{'Content-Transfer-Encoding'} eq '8bit' or
+                  $subPart->content_type =~ /(?:text\/plain|quoted-printable)/) {
+                $bodyText = $subPart->body_raw if $USERVAR{searchBodyText};
+                $encTxt   = $subPartHeader{'Content-Transfer-Encoding'};
+                $typeTxt  = $subPart->content_type;
+              } elsif ($subPart->content_type =~ /text\/html/) {
+                $bodyHTML = $subPart->body_raw if $USERVAR{searchBodyHTML};
+                $encHTML  = $subPartHeader{'Content-Transfer-Encoding'};
+                $typeHTML = $subPart->content_type;
+              }
+            }
+          } elsif ($partHeader{'Content-Type'} =~ /message\// and $USERVAR{searchBodyText}) {
+            $bodyText .= "\n\nAttached message: $partHeader{'Content-Type'}\n\n";
+            $bodyText .= $part->body_raw;
+          }
+        }
+        my $content;
+        if ($bodyText) {
+          $bodyText = decode_qp($bodyText) if $encTxt eq 'quoted-printable';
+          $bodyText = decode('utf8', $bodyText) if $file =~ /\.eml$/ and $typeTxt =~ /utf-?8/i;
+          if ($file =~ /\.msg$/) {
+            $bodyText =~ s/\r/\n/g;
+            $bodyText =~ s/[\n]+/\n/g;
+          }
+          $content = $bodyText;
+        }
+        if ($bodyHTML) {
+          $bodyHTML = decode_qp($bodyHTML) if $encHTML eq 'quoted-printable';
+          $bodyHTML = decode('utf8', $bodyHTML) if $file =~ /\.eml$/ and $typeHTML =~ /utf-?8/i;
+          $content .= $bodyHTML;
+        }
+        push(@lines, split(/\n/, $content));
+      }
+      # Search
+      foreach my $line (@lines) {
+        my $expr = $USERVAR{searchTerms};
+        my @listRes;
+        $expr = quotemeta($expr) if !$USERVAR{searchRegex};
+        # Line match
+        if (($USERVAR{searchMatchCase} and ($line =~ /$expr/ )) or
+            (!$USERVAR{searchMatchCase} and ($line =~ /$expr/i))) {
+          # If there is at least one capture group, we must extract data
+          my $r = Extract::Regex->new($expr, 1);
+          if ($r->nbrCaptureGroups()) {
+            while (($USERVAR{searchMatchCase} and ($line =~ /$expr/ )) or
+                   (!$USERVAR{searchMatchCase} and ($line =~ /$expr/i))) {
+              my ($partRes, $pos, $width) = &extractExpr($line, $expr);
+              if ($partRes) {
+                print $fhReport $file . "\t" if $USERVAR{sourceFile};
+                print $fhReport "$partRes\n";
+                $nbrRes++;
+                # Remove processed part of the line
+                chomp($partRes);
+                my $lineWidth = length($line);
+                my $offset    = $pos+$width;
+                $line         = substr($line,$offset,$lineWidth-$offset);
+              } else {
+                if ($USERVAR{searchMatchCase}) { $line =~ s/$expr//i; }
+                else                           { $line =~ s/$expr//;  }
+              }
+            }
+          } else { # No capture group, keep line
+            print $fhReport $file . "\t" if $USERVAR{sourceFile};
+            print $fhReport "$line\n"; $nbrRes++;
+          }
+        }
+      }
+      # Progress
+      $i++;
+      $GUI{status}{pt} = "$i/$nbrFiles";
+      $GUI{status}{pb} = int(($i/$nbrFiles) * 100);
+      $mw->update;
+    }
+    close($fhReport);
+  } else { &logError("Error creating $reportFilename: $!") if $SETTINGS{logging}; $error++; }
+  unlink($reportFilename) if !$nbrRes and -e $reportFilename;
+  $GUI{status}{st} = '';
+  $GUI{status}{pt} = '';
+  $GUI{status}{pb} = 0;
+  # Open report
+  system("cmd /c start $reportFilename") if $SETTINGS{openReportEnd} and -e $reportFilename;
+  return($error);
+}  #--- End search
+#------------------------------------------------------------------------------#
+sub extractExpr {
+#------------------------------------------------------------------------------#
+  my ($line, $expr) = @_;
+  my ($width, $pos) = 0;
+  my @listRes;
+  my $res;
+  # Test expr again
+  if ($USERVAR{searchMatchCase})  { @listRes = ($line =~ /$expr/);  }
+  else                            { @listRes = ($line =~ /$expr/i); }
+  foreach (@listRes) {
+    if (defined $_) {
+      $res  .= "$_\t";
+      $pos   = index($line,$_,$pos);
+      $width = length($_);
+    }
+  }
+  chop($res);
+  return($res, $pos, $width);
+}  #--- End extractExpr
+#--------------------------#
+sub validRegex {
+#--------------------------#
+  my $regex = shift;
+  if ($regex) {
+    eval { if ('test' =~ /$regex/) { } };
+    if ($@) {
+      my $errRegex = (split(/ at /,$@))[0];
+      return(1, $errRegex);
+    } else {
+      # Valid but senseless regex
+      return(2, undef) if $regex =~ /^\||\|\||(?:[^\\]\|$)/ or $regex =~ /^\(\.\*\)$/;
+      return(0, undef);
+    }
+  }  
+}  #--- End validRegex
+#--------------------------#
+sub gephi {
+#--------------------------#
+  my $refFiles = shift;
+  my $error    = 0;
+  my (%received, %email, %receivedLnk, %emailLnk, %mergeLnk);
+  # Extract data
+  my $i            = 0;
+  my $nbrFiles     = scalar(@{$refFiles});
+  $GUI{status}{pb} = $i;
+  $GUI{status}{pt} = "$i/$nbrFiles";
+  $GUI{status}{st} = 'Parsing email headers...';
+  foreach my $file (@{$refFiles}) {
+    my $mime;
+    if ($file =~ /\.msg$/) {
+      if (my $msg  = new Email::Outlook::Message($file)) {
+        $mime = $msg->to_email_mime;
+      } else { &logError("Error opening $file: $!") if $SETTINGS{logging}; $error++; next; }
+    } else {
+      if (open(my $fhEml, $file)) {
+        local $/ = undef;
+        my $msg  = <$fhEml>;
+        close($fhEml);
+        $mime = Email::MIME->new($msg);
+      } else { &logError("Error opening $file: $!") if $SETTINGS{logging}; $error++; next; }
+    }
+    if (!$mime) { &logError("Error parsing $file") if $SETTINGS{logging}; $error++; next; }
+    # Get all received fields values
+    my ($firstRecvFrom, $firstRecvBy, $lastRecvFrom, $lastRecvBy);
+    if ($USERVAR{gephiReceived} and exists($mime->{header}->{headers})) {
+      my $nextRec = 0;
+      my @receivedF;
+      foreach my $el (@{$mime->{header}->{headers}}) {
+        if    ($nextRec         ) { push(@receivedF, $el); $nextRec = 0; }
+        elsif ($el eq 'Received') { $nextRec = 1; }
+      }
+      foreach my $recv (reverse @receivedF) {
+        my ($value, $from, $fromHost, $fromIP, $fromIPType, $by, $byHost, $byIP, $byIPType);
+        if (ref($recv) eq 'ARRAY') { $value .= $$recv[0]; }
+        else                       { $value  = $recv;     }
+        if ($value =~ /from ([^ ]+) (.+?)by/) {
+          $fromHost = $1;
+          $from     = $fromHost;
+          ($fromIP, $fromIPType) = &extractIP($2);
+          ($fromIP, $fromIPType) = &extractIP($1) if !$fromIP;
+          chop($fromIP) while $fromIP =~ s/\s$//;
+          $from .= ' ' . $fromIP if $fromIP;
+        } elsif ($value =~ /from ([^ ]+) by/) { $from = $1; }
+        $fromIPType = 'UNKNOWN' if !$fromIPType;
+        if ($value =~ /by ([^ ]+) ([^ ]+)/  ) {
+          $byHost = $1;
+          $by     = $byHost;
+          ($byIP, $byIPType) = &extractIP($2);
+          ($byIP, $byIPType) = &extractIP($1) if !$byIP;
+          $by .= ' ' . $byIP if $byIP;
+        }
+        $byIPType = 'UNKNOWN' if !$byIPType;        
+        # Node
+        if ($USERVAR{gephiReceivedEl} ne 'both') { # IPs or hostnames or both
+          if ($USERVAR{gephiReceivedEl} eq 'IPs') {  # IPs only
+            $from = $fromIP if $fromIP;
+            $by   = $byIP   if $byIP;
+          } else {
+            $from = $fromHost; $by = $byHost; } # Host only
+        }
+        print "$from - $by\n";
+        if ($from and !exists($received{$from}) and $USERVAR{gephiReceivedP} ne 'by') {
+          $received{$from}{id}   = 'R'.(scalar(keys %received)+1);
+          $received{$from}{type} = $fromIPType;
+        }
+        if ($by and !exists($received{$by}) and $USERVAR{gephiReceivedP} ne 'from') {
+          $received{$by}{id}   = 'R'.(scalar(keys %received)+1);
+          $received{$by}{type} = $byIPType;
+        }
+        # Edge
+        if ($USERVAR{gephiReceivedP} eq 'both') { # Link between From and By
+          if ($from) {
+            if (exists($receivedLnk{"$received{$from}{id}\t$received{$by}{id}"})) {
+              $receivedLnk{"$received{$from}{id}\t$received{$by}{id}"}++;
+            } else { $receivedLnk{"$received{$from}{id}\t$received{$by}{id}"} = 1; }
+          }
+          if ($lastRecvBy) { # Link with last received
+            if ($from) {
+              if (exists($receivedLnk{"$lastRecvBy\t$received{$from}{id}"})) {
+                $receivedLnk{"$lastRecvBy\t$received{$from}{id}"}++;
+              } else { $receivedLnk{"$lastRecvBy\t$received{$from}{id}"} = 1; }
+            } else {
+              if (exists($receivedLnk{"$lastRecvBy\t$received{$by}{id}"})) {
+                $receivedLnk{"$lastRecvBy\t$received{$by}{id}"}++;
+              } else { $receivedLnk{"$lastRecvBy\t$received{$by}{id}"} = 1; }              
+            }
+          }
+          if ($by) {
+            $firstRecvBy   = $received{$by}{id} if !$firstRecvBy;
+            $lastRecvBy    = $received{$by}{id};
+          }
+          if ($from) {
+            $firstRecvFrom = $received{$from}{id} if !$firstRecvFrom;
+            $lastRecvFrom  = $received{$from}{id};
+          }
+        } elsif ($USERVAR{gephiReceivedP} eq 'from') { # Link between last From and this From
+          if ($lastRecvFrom and $from) {
+            if (exists($receivedLnk{"$lastRecvFrom\t$received{$from}{id}"})) {
+              $receivedLnk{"$lastRecvFrom\t$received{$from}{id}"}++;
+            } else { $receivedLnk{"$lastRecvFrom\t$received{$from}{id}"} = 1; }
+          }
+          if ($from) {
+            $firstRecvFrom = $received{$from}{id} if !$firstRecvFrom;
+            $lastRecvFrom  = $received{$from}{id};
+          }
+        } else { # Link between last By and this By
+          if ($lastRecvBy) {
+            if (exists($receivedLnk{"$lastRecvBy\t$received{$by}{id}"})) {
+              $receivedLnk{"$lastRecvBy\t$received{$by}{id}"}++;
+            } else { $receivedLnk{"$lastRecvBy\t$received{$by}{id}"} = 1; }
+          }
+          if ($by) {
+            $firstRecvBy = $received{$by}{id} if !$firstRecvBy;
+            $lastRecvBy  = $received{$by}{id};
+          }
+        }
+      }
+    }
+    # Get all email addresses
+    if ($USERVAR{gephiEmails} and my %head = $mime->header_str_pairs) {
+      my ($from, $to);
+      foreach my $fieldName (keys %head) {
+        if (my $value = $head{$fieldName}) {
+          $from = $value if uc($fieldName) eq 'FROM';
+          $to   = $value if uc($fieldName) eq 'TO';
+        }
+      }
+      if ($from and $to) {
+        my @receivers = split(/, ?/, $to); # List receivers
+        # Node
+        if ($USERVAR{gephiEmailsEl} ne 'both') {
+          my ($fromName, $fromAddr) = split(/ </, $from);
+          if ($USERVAR{gephiEmailsEl} eq 'name') { $from = $fromName; }
+          else {
+            $fromAddr =~ s/>//;
+            $fromAddr = $fromName if !$fromAddr;
+            $from     = $fromAddr;
+          }
+          foreach my $i (0 .. (scalar(@receivers)-1)) {
+            my ($toName  , $toAddr  ) = split(/ </, $receivers[$i]);
+            if ($USERVAR{gephiEmailsEl} eq 'name') { $receivers[$i] = $toName; }
+            else {
+              $toAddr =~ s/>//;
+              if ($toAddr) { $receivers[$i] = $toAddr; }
+              else         { $receivers[$i] = $toName; }
+            }
+          }
+        }
+        $email{$from} = scalar(keys %email)+1 if !exists($email{$from});
+        if ($USERVAR{gephiReceived}) { # Sender email to first received
+          my $serv = $firstRecvFrom;
+          $serv    = $firstRecvBy if !$serv;
+          if (exists($mergeLnk{"$email{$from}\t$serv"})) {
+            $mergeLnk{"$email{$from}\t$serv"}++;
+          } else { $mergeLnk{"$email{$from}\t$serv"} = 1; }
+        }
+        foreach my $recv (@receivers) {
+          $email{$recv}   = scalar(keys %email)+1 if !exists($email{$recv}  );
+          # Edge
+          if (exists($emailLnk{"$email{$from}\t$email{$recv}"})) {
+            $emailLnk{"$email{$from}\t$email{$recv}"}++;
+          } else { $emailLnk{"$email{$from}\t$email{$recv}"} = 1; }
+          # Merge (link between email and received)
+          if ($USERVAR{gephiReceived}) { # Last received to receiver email
+            my $serv = $lastRecvBy;
+            $serv    = $lastRecvFrom if !$serv;
+            if ($lastRecvBy and exists($mergeLnk{"$serv\t$email{$recv}"})) {
+              $mergeLnk{"$serv\t$email{$recv}"}++;
+            } else { $mergeLnk{"$serv\t$email{$recv}"} = 1; }
+          }
+        }
+      }
+    }
+    # Progress
+    $i++;
+    $GUI{status}{pt} = "$i/$nbrFiles";
+    $GUI{status}{pb} = int(($i/$nbrFiles) * 100);
+    $mw->update;
+  }
+  $GUI{status}{st} = '';
+  $GUI{status}{pt} = '';
+  $GUI{status}{pb} = 0;
+  # Create report
+  $GUI{status}{st} = 'Creating csv files...';
+  # Received CSV
+  if ($USERVAR{gephiReceived} and scalar(keys %received) and scalar(keys %receivedLnk)) {
+    my $nodeCSVFN = $SETTINGS{reportDir} . "\\" . 'Received_Node.csv';
+    if (open(NODE, ">:encoding(UTF-8)", $nodeCSVFN)) {
+      print NODE "Id\tLabel\tCategory\tRegion\n";
+      foreach my $serv (sort { $received{$a}{id} cmp $received{$b}{id} } keys %received) {
+        print NODE "$received{$serv}{id}\t$serv\tReceived\t$received{$serv}{type}\n";
+      }
+      # Add emails
+      if ($USERVAR{gephiEmails} and scalar(keys %email) and scalar(keys %mergeLnk)) {
+        foreach my $value (sort { $email{$a} <=> $email{$b} } keys %email) { print NODE "$email{$value}\t$value\tEmail\tEMAIL\n"; }
+      }
+      close(NODE);
+    } else { &logError("Error creating $nodeCSVFN: $!") if $SETTINGS{logging}; $error++; }
+    my $edgeCSVFN = $SETTINGS{reportDir} . "\\" . 'Received_Edge.csv';
+    if (open(EDGE, ">:encoding(UTF-8)", $edgeCSVFN)) {
+      print EDGE "Source\tTarget\tType\tWeight\n";
+      foreach my $lnk (sort sortLNK(keys %receivedLnk) ) { print EDGE "$lnk\tdirected\t$receivedLnk{$lnk}\n"; }
+      if ($USERVAR{gephiEmails} and scalar(keys %email) and scalar(keys %mergeLnk)) {
+        foreach my $lnk (keys %mergeLnk) { print EDGE "$lnk\tdirected\t1\n"; }
+      }
+      close(EDGE);
+    } else { &logError("Error creating $edgeCSVFN: $!") if $SETTINGS{logging}; $error++; }
+  }
+  # Emails CSV
+  elsif ($USERVAR{gephiEmails} and scalar(keys %email) and scalar(keys %emailLnk)) {
+    my $nodeCSVFN = $SETTINGS{reportDir} . "\\" . 'Emails_Node.csv';
+    if (open(NODE, ">:encoding(UTF-8)", $nodeCSVFN)) {
+      print NODE "Id\tLabel\tCategory\tRegion\n";
+      foreach my $value (sort { $email{$a} <=> $email{$b} } keys %email) { print NODE "$email{$value}\t$value\tReceived\tcold\n"; }
+      close(NODE);
+    } else { &logError("Error creating $nodeCSVFN: $!") if $SETTINGS{logging}; $error++; }
+    my $edgeCSVFN = $SETTINGS{reportDir} . "\\" . 'Emails_Edge.csv';
+    if (open(EDGE, ">:encoding(UTF-8)", $edgeCSVFN)) {
+      print EDGE "Source\tTarget\tType\tWeight\n";
+      foreach my $lnk (sort sortLNK(keys %emailLnk) ) { print EDGE "$lnk\tdirected\t1\n"; }
+      close(EDGE);
+    } else { &logError("Error creating $edgeCSVFN: $!") if $SETTINGS{logging}; $error++; }
+  }
+  $GUI{status}{st} = '';
+  # Open report
+  system("cmd /c start $SETTINGS{reportDir}") if $SETTINGS{openDirEnd};
+  return($error);
+}  #--- End gephi
+#--------------------------#
+sub extractIP {
+#--------------------------#
+  my $str = shift;
+  if ($str =~ /(?:[^0-9]|^)((?:(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.){3}(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?))(?:[^0-9\.]|$)/ or
+      $str =~ /($IPv6_re)/) {
+    my $ip = $1;
+    my $type;
+    if (my $netIp = new Net::IP ($ip)) { $type = $netIp->iptype(); }
+    if ($type eq '6TO4') {
+      if ($ip =~ /2002:([^:]+):([^:]+)/ and $SETTINGS{convert6to4}) {
+        my $ipv4dec =  hex(sprintf("%04s", $1) . sprintf("%04s", $2));
+        $ip = join '.', unpack 'C4', pack 'N', $ipv4dec;
+        if (my $netIp = new Net::IP ($ip)) { $type = $netIp->iptype(); }
+      }
+    }
+    $type = 'UNKNOWN' if !$type;
+    return($ip, $type);
+  }
+  return(undef, 'UNKNOWN');
+  
+}  #--- End extractIP
+#--------------------------#
+sub sortLNK {
+#--------------------------#
+  my ($a1,$a2) = split(/\t/, $a);
+  my ($b1,$b2) = split(/\t/, $b);
+  if ($a1 == $b1) { return($a2 <=> $b2); }
+  else            { return($a1 <=> $b1); }
+}  #--- End sortLNK
+#--------------------------#
+sub validSQLiteDB {
+#--------------------------#
+  my ($DBFile, $table) = @_;
+  if (-f $DBFile) {
+    my $dsn = "DBI:SQLite:dbname=$DBFile";
+    if (my $dbh = DBI->connect($dsn, undef, undef, { })) {
+      if (my $sth = $dbh->table_info(undef, undef, '%', 'TABLE')) {
+				my @info = $sth->fetchrow_array;
+				$sth->finish();
+				return(1) if $info[2] eq $table; # If table exists, database is valid
+			}
+    }
+  }
+  return(0);
+}  #--- End validSQLiteDB
+#--------------------------#
+sub validGeoIPDB {
+#--------------------------#
+  my $GeoIPDBFile = shift;
+  if (-e $GeoIPDBFile) {
+		eval { MaxMind::DB::Reader->new(file => $GeoIPDBFile) };
+    if (!$@) { return(1); }
+		else		 { return(0); }
+  } else { return(0); }
+}  #--- End validGeoIPDB
+#--------------------------#
+sub convertDatetime {
+#--------------------------#
+  my $string = shift;
+  my %formats = (
+    'Tuesday, 08-Feb-1994 14:15:29 GMT' => '\d+, \d{2}\-\w{3}\-\d{4} \d{2}\:\d{2}\:\d{2} \w{3}',
+    'Thu Feb  3 17:03:55 GMT 1994' => '\w{3} \w{3} + \d{1,2} \d{2}\:\d{2}\:\d{2} \w{3} \d{4}',
+    'Wed, 09 Feb 1994 22:23:32 +0000 (GMT)' => '\w{3}, \d{1,2} \w{3} \d{4} \d{2}\:\d{2}\:\d{2} [-+]?\d{4} \(\w{3}\)',
+    'Tuesday, 08-Feb-94 14:15:29 GMT' => '\d+, \d{2}\-\w{3}\-\d{2} \d{2}\:\d{2}\:\d{2} \w{3}',
+    'Wed, 09 Feb 1994 22:23:32 +0000' => '\w{3}, \d{1,2} \w{3} \d{4} \d{2}\:\d{2}\:\d{2} [-+]?\d{4}',
+    'Wed, 09 Feb 1994 22:23:32 GMT' => '\w{3}, \d{1,2} \w{3} \d{4} \d{2}\:\d{2}\:\d{2} \w{3}',
+    '03/Feb/1994:17:03:55 -0700' => '\d{2}\/\w{3}\/\d{4}\:\d{2}\:\d{2}\:\d{2} [\-\+]?\d{4}',
+    '1994-02-03 14:15:29 -0100' => '\d{4}\-\d{2}\-\d{2} \d{2}\:\d{2}\:\d{2} [\-\+]?\d{4}',
+    '08-Feb-1994 14:15:29 GMT' => '\d{2}\-\w{3}\-\d{4} \d{2}\:\d{2}\:\d{2} \w{3}',
+    '09 Feb 1994 22:23:32 GMT' => '\d{2} \w{3} \d{4} \d{2}\:\d{2}\:\d{2} \w{3}',
+    '08-Feb-94 14:15:29 GMT' => '\d{2}\-\w{3}\-\d{2} \d{2}\:\d{2}\:\d{2} \w{3}',
+    'Thu Feb  3 00:00:00 1994' => '\w{3} \w{3} + \d{1,2} \d{2}\:\d{2}\:\d{2}',
+    '1994-02-03 14:15:29' => '\d{4}\-\d{2}\-\d{2} \d{2}\:\d{2}\:\d{2}',
+    '03/02/1994 14:15:29' => '\d{2}\/\d{2}\/\d{4} \d{2}\:\d{2}\:\d{2}',
+    '1994-02-03T14:15:29' => '\d{4}\-\d{2}\-\d{2}T\d{2}\:\d{2}\:\d{2}',
+    '11-15-96  03:52PM' => '\d{2}\-\d{2}\-\d{2} +\d{2}\:\d{2}\w{2}',
+    'Feb  3 17:03' => '\w{3} +\d{1,2} +\d{2}\:\d{2}',
+    'Feb  3  1994' => '\w{3} +\d{1,2} +\d{4}',
+    '08-Feb-1994' => '\d{2}\-\w{3}\-\d{4}',
+    '03/Feb/1994' => '\d{2}\/\w{3}\/\d{4}',
+    '1994-02-03' => '\d{4}\-\d{2}\-\d{2}',
+    '19940203T141529Z' => '\d{8}T\d{6}Z',
+    '08-Feb-94' => '\d{2}\-\w{3}\-\d{2}',
+    '09 Feb 1994' => '\d{2} \w{3} \d{4}',
+    '19940203' => '\d{8}'
+  );
+  # Guess format
+  my $time;
+  foreach my $format (keys %formats) {
+    my $regex = $formats{$format};
+    if ($string =~ /($regex)/) {
+      my $dateStr = $1;
+      eval { $time = str2time($dateStr); };
+      if (!$@ and $time) {
+        my $dt = DateTime->from_epoch(epoch => $time);
+        $dt->set_time_zone($SETTINGS{localTZ});
+        my $newDateStr = $dt->strftime('%F %T %z');
+        my $replace = quotemeta($dateStr);
+        $string =~ s/$replace/$newDateStr/;
+        return($string);
+      }
+    }
+  }
+  return($string);
+}  #--- End convertDatetime
+#--------------------------#
+sub nsLookup {
+#--------------------------#
+  my $ip  = shift;
+  my $res = Net::DNS::Resolver->new;
+  $res->tcp_timeout(5);
+  $res->udp_timeout(5);
+  my $packet = $res->query($ip, "PTR", "IN");
+  if ($packet) {
+    my @addrs    = $packet->answer;
+    my $hostname = '';
+    foreach (@addrs) { $hostname .= $_->ptrdname.", " if $_->type eq 'PTR' and $_->ptrdname; }
+    if ($hostname) {
+      chop($hostname); chop($hostname);
+      return($hostname);
+    }
+  }
+  return('No result');
+}  #--- End nsLookup
+#--------------------------#
+sub checkIP_WhoisDB_IPv4 {
+#--------------------------#
+  my ($ip, $refDbh) = @_;
+  my $ipInt = unpack 'N', pack 'C4', split '\.', $ip;
+  my ($isp, $country);
+  my $interMin = 4294967295;
+  my $sth = $$refDbh->prepare("SELECT range_s,range_e,isp,country from WHOIS_DB WHERE $ipInt >= range_s AND $ipInt <= range_e");
+  my $rv  = $sth->execute();
+  if ($rv > -1) {
+    # Choose smaller range 
+    my $refAllRows = $sth->fetchall_arrayref();
+    foreach my $refRow (@{$refAllRows}) {
+      my $inter = $$refRow[1] - $$refRow[0];
+      if ($inter < $interMin) {
+        $interMin = $inter;
+        $isp      = $$refRow[2];
+        $country  = $$refRow[3];
+      }
+    }
+  }
+  if ($isp and $country) { return("$isp, $country"); }
+  else                   { return(undef);            }
+}  #--- End checkIP_WhoisDB_IPv4
+#--------------------------#
+sub checkIP_WhoisDB_IPv6 {
+#--------------------------#
+  my ($ip, $refDbh) = @_;
+  my $all = $$refDbh->selectall_arrayref("SELECT * FROM WHOIS_DB_6");
+  foreach my $row (@$all) {
+    my $cidr = @$row[0];
+    return("@$row[1], @$row[2]") if Net::CIDR::cidrlookup($ip, ($cidr));
+  }
+}  #--- End checkIP_WhoisDB_IPv6
+#--------------------------#
+sub resGeoIP {
+#--------------------------#
+  my ($ip, $refReader) = @_;
+  my $record;
+  eval { $record = $$refReader->city(ip => $ip); };
+  if ($record) {
+    my $answer;
+    $answer .= $record->city()->name().','										if $record->city()->name();
+    $answer .= $record->most_specific_subdivision->name().','	if $record->most_specific_subdivision->name();
+    $answer .= $record->country()->name().','									if $record->country()->name();
+    chop($answer);
+    return($answer);
+  }
+  return(undef);
+}  #--- Fin resGeoIP
+#--------------------------#
+sub date {
+#--------------------------#
+  my $time = shift;
+	if ($time) {
+		my ($s,$min,$hr,$d,$m,$y) = localtime($time);
+		return(sprintf("%04d\-%02d\-%02d %02d:%02d:%02d", $y+1900, $m+1, $d, $hr, $min, $s));
+	}
+}  #--- End date
+#--------------------------#
+sub logError {
+#--------------------------#
+  my $refMsg = shift;
+  my $dateStr = &date(time);
+  # Save error msg in log file
+	my $fhLog;
+  if (-e $LOGGING_FILE) { open($fhLog,">>$LOGGING_FILE"); }
+  else                  { open($fhLog,">$LOGGING_FILE");  }
+  flock($fhLog, 2);
+  print $fhLog "$dateStr\t$refMsg\n";
+  close($fhLog);  
+}  #--- End log
+#--------------------------#
+sub saveSettings {
+#--------------------------#
+  $SETTINGS{PHT_NSEL} = join(' ', @{$USERVAR{PHT_NSEL}}); # Parse Headers Typical - Not selected
+  $SETTINGS{PHT_SEL}  = join(' ', @{$USERVAR{PHT_SEL}});  # Parse Headers Typical - Selected
+  $SETTINGS{ET_NSEL}  = join(' ', @{$USERVAR{ET_NSEL}});  # Extract Typical - Not selected
+  $SETTINGS{ET_SEL}   = join(' ', @{$USERVAR{ET_SEL}});   # Extract Typical - Selected
+  open(FH_SETTINGS,">$SETTINGS_FILE");
+  flock(FH_SETTINGS, 2);
+  foreach my $cle (keys %SETTINGS) { print FH_SETTINGS "$cle = $SETTINGS{$cle}\n"; }
+  close(FH_SETTINGS);
+  
+}  #--- End saveSettings
+#--------------------------#
+sub loadSettings {
+#--------------------------#
+  # Open and load settings values
+  if (-e $SETTINGS_FILE) {
+    open(FH_SETTINGS, $SETTINGS_FILE);
+    my @tab = <FH_SETTINGS>;
+    close(FH_SETTINGS);
+    foreach (@tab) {
+      chomp($_);
+      my ($key, $value) = split(/ = /, $_);
+      $SETTINGS{$key}   = $value if $key;
+    }
+  } else { # Create one
+    open(FH_SETTINGS, ">$SETTINGS_FILE");
+    close(FH_SETTINGS);
+  }
+  $SETTINGS{CSVSeparator} = 'Tab' if !$SETTINGS{CSVSeparator};
+  # Invalid destination folder
+  $SETTINGS{reportDir} = '' if exists($SETTINGS{reportDir}) and $SETTINGS{reportDir} and !-d $SETTINGS{reportDir};
+  # Init preferences for selected fields
+  my @notSel = qw/Accept-Language Content-Language Content-Transfer-Encoding Content-Type DKIM-Signature In-Reply-To MIME-Version Message-Id References Reply-To Thread-Index Thread-Topic Received-spf X-_Fields_/;
+  my @sel    = qw/From To Date Subject X-ORIGINATING-IP Received/;
+  @{$USERVAR{PH_NSEL}}  = @notSel;
+  @{$USERVAR{PH_SEL}}   = @sel;
+  @{$USERVAR{E_NSEL}}   = @notSel;
+  @{$USERVAR{E_SEL}}    = @sel;
+  if (exists($SETTINGS{PHT_NSEL}) and exists($SETTINGS{PHT_SEL})) {
+    @{$USERVAR{PHT_NSEL}} = split(/ /, $SETTINGS{PHT_NSEL}); # Parse Headers Typical - Not selected
+    @{$USERVAR{PHT_SEL}}  = split(/ /, $SETTINGS{PHT_SEL});  # Parse Headers Typical - Selected
+  } else {
+    @{$USERVAR{PHT_NSEL}} = @notSel;
+    @{$USERVAR{PHT_SEL}}  = @sel;
+  }
+  if (exists($SETTINGS{ET_NSEL}) and exists($SETTINGS{ET_SEL})) {
+    @{$USERVAR{ET_NSEL}}  = split(/ /, $SETTINGS{ET_NSEL});  # Extract Typical - Not selected
+    @{$USERVAR{ET_SEL}}   = split(/ /, $SETTINGS{ET_SEL});   # Extract Typical - Selected
+  } else {
+    @{$USERVAR{ET_NSEL}} = @notSel;
+    @{$USERVAR{ET_SEL}}  = @sel;
+  }
+  # XL-Whois database
+  if (!$SETTINGS{xlwhoisDB}) {
+    my $defaultPath = "$ENV{'APPDATA'}\\XL-Toolkit\\XL-Whois\\Whois.db";
+    $SETTINGS{xlwhoisDB} = $defaultPath if -f $defaultPath;
+  }
+  # GeoIP database
+  if (!$SETTINGS{geoIPDB}) {
+    my $defaultPath = "$ENV{'PROGRAMDATA'}\\Maxmind\\GeoIPUpdate\\GeoIP\\GeoLite2-City.mmdb";
+       $defaultPath = "$ENV{'APPDATA'}\\XL-Toolkit\\XL-Tools\\GeoLite2-City.mmdb"  if !$defaultPath;
+       $defaultPath = "$ENV{'APPDATA'}\\XL-Toolkit\\XL-Whois\\GeoLite2-City.mmdb"  if !$defaultPath;
+       $defaultPath = "$ENV{'APPDATA'}\\XL-Toolkit\\XL-Parser\\GeoLite2-City.mmdb" if !$defaultPath;
+    $SETTINGS{geoIPDB} = $defaultPath if -f $defaultPath;
+  }
+  $SETTINGS{checkUpdate} = 1 if !exists($SETTINGS{checkUpdate});
+  if (-e $LOGGING_FILE) { $GUI{openLogButton}->configure(-state => 'normal');   }
+  else                  { $GUI{openLogButton}->configure(-state => 'disabled'); }
+  &saveSettings();
+}  #--- End loadSettings
+#--------------------------#
+sub updateTool
+#--------------------------#
+{
+  my $confirm = shift;
+  # Download the version file  
+  my $ua = new LWP::UserAgent;
+  $ua->agent("XL-ParseMails Update $VERSION");
+  $ua->default_header('Accept-Language' => 'en');
+  my $req = new HTTP::Request GET => $URL_VER;
+  my $res = $ua->request($req);
+  # Success, compare versions
+  if ($res->is_success) {
+    my $status  = $res->code;
+    my $content = $res->content;
+    my $currVer;
+    $currVer = $1 if $content =~ /([\d\.]+)/i;
+    # No update available
+    if ($currVer le $VERSION) {
+      $mw->messageBox(-title   => 'Update XL-ParseMails',
+                      -message => 'You have the latest version installed.',
+                      -type    => 'Ok',
+                      -icon    => 'info',
+                      -default => 'Ok') if $confirm;
+    } else {
+      my $answer = $mw->messageBox(-title   => 'Update XL-ParseMails',
+                                   -message => "Version $currVer is available. Download it?",
+                                   -type    => 'YesNo',
+                                   -icon    => 'question',
+                                   -default => 'Yes');
+      # Open the download page
+      if ($answer eq 'Yes') { system("cmd /c start $URL_TOOL"); }
+    }
+  # Error 
+  } else {
+    $mw->messageBox(-title   => 'Update XL-ParseMails',
+                    -message => 'Connection error: ' .$res->status_line,
+                    -type    => 'Ok',
+                    -icon    => 'error',
+                    -default => 'Ok') if $confirm;
+    &logError('Connection error when checking for update on le-tools.com: ' .$res->status_line) if $SETTINGS{logging};
+  }
+
+}  #--- End updateTool
