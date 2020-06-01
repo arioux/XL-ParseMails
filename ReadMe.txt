@@ -24,7 +24,7 @@ For databases:
 For icons:
 - The main logo of XL-ParseMails has been created by sora-meliae (Andrea Soragna) on term of the GNU General Public License.
 - The icon used for Open folder button comes from Basic Icons by PixelMixer and is distributed as Freeware.
-- The "Open folder in Explorer" icon comes from Danish Royalty Free Icons by Jonas Rask Design (http://jonasraskdesign.com). 
-  This icon is distributed as Freeware.
+- The "Open folder in Explorer" icon comes from Danish Royalty Free Icons by Jonas Rask Design (http://jonasraskdesign.com). This icon is distributed as Freeware.
 - Process, Settings and About buttons come from the Blue Bits collection of Icojam (licensed as "Public Domain").
+- Stop icon has been created by emey87 (Manuel Lopez, http://emey87.deviantart.com) and is distributed on term of the CC Attribution-No Derivative 4.0 license.
 - Documentation icon has been created by Oxygen Team on term of the GNU Lesser General Public License.

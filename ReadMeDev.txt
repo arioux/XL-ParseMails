@@ -30,10 +30,14 @@ XL-ParseMails has been developped using ActivePerl 5.16.3 with the following mod
 - Net-DNS (v1.02)
 - Net-IP (v1.26)
 - Regexp-IPv6 (v0.03)
-- Tk (v804.034)
-- Tk-StatusBar (v0.04)
+- URI (v1.71)
+- Win32-API (v0.84)
+- Win32-GUI (v1.11)
+- Win32-Process (v0.16)
 - base (v2.23)
-
+- base (v2.23)
+- threads (v2.21)
+- threads-shared (v1.59)
 
 
 Packaging
