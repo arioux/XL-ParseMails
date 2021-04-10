@@ -6178,7 +6178,6 @@ oKCisrKz////////////////2dnZ+fn58/Pz7e3t5+fo4uLi3Nzc0dHRwcHCpKWme3x/qKip////
 v4glw40qwo4usoQukG0oh3NJy8vL+Pj4////////////////////6efk0cq/0szA08zA083B083B
 z8rBy8jB29rY////////////////////
 ) );
-
   return(\%IMG);
 }
 
